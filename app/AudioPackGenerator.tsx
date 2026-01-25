@@ -473,7 +473,7 @@ function FfmpegBlockingOverlay({
   const title = isError ? "转换器加载失败" : "正在加载音频转换器";
   const desc = isError
     ? `已重试 ${maxRetries} 次仍失败，请刷新页面后再试。`
-    : "首次加载FFmpeg较慢，请耐心等待，期间将暂时禁止操作。";
+    : "加载FFmpeg较慢，请耐心等待，期间将暂时禁止操作。";
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const lastActiveRef = useRef<HTMLElement | null>(null);
 
