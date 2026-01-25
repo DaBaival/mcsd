@@ -7,6 +7,7 @@ import {
   AlertCircle,
   Check,
   ChevronDown,
+  Copy,
   Download,
   Edit2,
   Loader2,
@@ -29,11 +30,12 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import ffmpeg from "../lib/ffmpeg";
-import vanillaSoundsJson from "../public/java/sounds.json";
+import mcVersions, { type JavaPackVersion } from "../lib/mcver";
+import { vanillaSoundBedrock, vanillaSoundJava } from "../lib/sounds";
 
 type PackPlatform = "java" | "bedrock";
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 
 type FileItem = {
   id: string;
@@ -50,24 +52,107 @@ type PackMeta = {
   key: string;
   desc: string;
   platform: PackPlatform;
+  javaPackFormat: string;
   iconFile: File | null;
   iconPreviewUrl: string | null;
   modifyVanilla: boolean;
 };
 
 const DEFAULT_KEY = "mcsd";
+const NAME_MAX_LENGTH = 10;
+const JAVA_DESC_MAX_LENGTH = 20;
+const BEDROCK_DESC_MAX_LENGTH = 40;
+const AUTO_DESC_SUFFIX = "By mcsd";
+
+function getDescLimit(platform: PackPlatform) {
+  return platform === "bedrock" ? BEDROCK_DESC_MAX_LENGTH : JAVA_DESC_MAX_LENGTH;
+}
+
+function buildPackDescription(desc: string) {
+  const trimmed = desc.trim();
+  return trimmed ? `${trimmed} ${AUTO_DESC_SUFFIX}` : AUTO_DESC_SUFFIX;
+}
+
+function clampDescForPlatform(desc: string, platform: PackPlatform) {
+  const limit = getDescLimit(platform);
+  const base = desc.trim();
+  const extra = base ? 1 : 0;
+  const maxBaseLen = Math.max(0, limit - AUTO_DESC_SUFFIX.length - extra);
+  return clampText(base, maxBaseLen);
+}
 
 type VanillaEventOption = {
   key: string;
   category: string;
 };
 
-const VANILLA_EVENT_OPTIONS: VanillaEventOption[] = Object.keys(
-  vanillaSoundsJson as Record<string, unknown>
-)
-  .filter(Boolean)
-  .map((key) => ({ key, category: key.split(".")[0] ?? "其他" }))
-  .sort((a, b) => a.key.localeCompare(b.key));
+function buildVanillaEventOptions(keys: string[]): VanillaEventOption[] {
+  return keys
+    .filter(Boolean)
+    .map((key) => ({ key, category: key.split(".")[0] ?? "其他" }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function extractBedrockVanillaSoundEvents(source: unknown): string[] {
+  const result = new Set<string>();
+  const stack: unknown[] = [source];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    if (Array.isArray(current)) {
+      for (const item of current) stack.push(item);
+      continue;
+    }
+
+    if (typeof current !== "object") continue;
+
+    for (const [k, v] of Object.entries(current as Record<string, unknown>)) {
+      if ((k === "sound" || k === "sounds") && typeof v === "string") {
+        const trimmed = v.trim();
+        if (trimmed) result.add(trimmed);
+      }
+
+      if (k === "sounds" && Array.isArray(v)) {
+        for (const item of v) {
+          if (typeof item === "string") {
+            const trimmed = item.trim();
+            if (trimmed) result.add(trimmed);
+          }
+        }
+      }
+
+      stack.push(v);
+    }
+  }
+
+  return Array.from(result).sort((a, b) => a.localeCompare(b));
+}
+
+const JAVA_VANILLA_EVENT_OPTIONS: VanillaEventOption[] = buildVanillaEventOptions(
+  Object.keys(vanillaSoundJava as Record<string, unknown>)
+);
+const BEDROCK_VANILLA_EVENT_OPTIONS: VanillaEventOption[] = buildVanillaEventOptions(
+  extractBedrockVanillaSoundEvents(vanillaSoundBedrock)
+);
+
+function buildJavaPackFormatOptions(list: JavaPackVersion[]) {
+  const map = new Map<number, string>();
+  for (const item of list) {
+    const parsed = Number(item.pack_format);
+    if (!Number.isFinite(parsed)) continue;
+    const packFormat = Math.trunc(parsed);
+    if (packFormat <= 0) continue;
+    map.set(packFormat, item.version);
+  }
+  return Array.from(map.entries())
+    .map(([packFormat, version]) => ({ packFormat, version }))
+    .sort((a, b) => b.packFormat - a.packFormat);
+}
+
+const JAVA_PACK_FORMAT_OPTIONS = buildJavaPackFormatOptions(mcVersions);
+const DEFAULT_JAVA_PACK_FORMAT = String(JAVA_PACK_FORMAT_OPTIONS[0]?.packFormat ?? 15);
 
 function clampText(value: string, maxLength: number) {
   return value.length > maxLength ? value.slice(0, maxLength) : value;
@@ -76,6 +161,36 @@ function clampText(value: string, maxLength: number) {
 function normalizeKey(input: string) {
   const cleaned = input.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
   return cleaned.length ? cleaned.slice(0, 5) : DEFAULT_KEY;
+}
+
+function buildJavaPackMcmeta(packFormat: number, description: string) {
+  if (packFormat >= 65) {
+    return {
+      pack: {
+        pack_format: packFormat,
+        description,
+        min_format: [packFormat, 0],
+        max_format: [packFormat, 0],
+      },
+    };
+  }
+
+  if (packFormat >= 16) {
+    return {
+      pack: {
+        pack_format: packFormat,
+        description,
+        supported_formats: [packFormat, packFormat],
+      },
+    };
+  }
+
+  return {
+    pack: {
+      pack_format: packFormat,
+      description,
+    },
+  };
 }
 
 function buildId() {
@@ -210,19 +325,23 @@ function buildJavaSoundsJson(
     if (modifyVanilla && f.vanillaEvent) {
       soundsJson[f.vanillaEvent] = {
         replace: true,
-        sounds: [{ name: `minecraft:${soundPath}`, stream: true }],
+        sounds: [{ name: `${soundPath}`, stream: true }],
       };
     } else {
-      const customKey = `${key}_${f.newName}`;
+      const customKey = `${key}.${f.newName}`;
       soundsJson[customKey] = {
-        sounds: [{ name: `minecraft:${soundPath}`, stream: true }],
+        sounds: [{ name: `${soundPath}`, stream: true }],
       };
     }
   }
   return soundsJson;
 }
 
-function buildBedrockSoundDefinitions(files: Array<Pick<FileItem, "newName">>) {
+function buildBedrockSoundDefinitions(
+  key: string,
+  files: Array<Pick<FileItem, "newName" | "vanillaEvent">>,
+  modifyVanilla: boolean
+) {
   const definitions: Record<string, unknown> = {
     format_version: "1.14.0",
     sound_definitions: {},
@@ -234,9 +353,10 @@ function buildBedrockSoundDefinitions(files: Array<Pick<FileItem, "newName">>) {
   >;
 
   for (const f of files) {
-    soundDefinitions[`custom.${f.newName}`] = {
-      category: "neutral",
-      sounds: [`sounds/custom/${f.newName}`],
+    const eventKey = modifyVanilla && f.vanillaEvent?.trim() ? f.vanillaEvent.trim() : `${key}.${f.newName}`;
+    soundDefinitions[eventKey] = {
+      category: "record",
+      sounds: [`sounds/${key}/${f.newName}`],
     };
   }
 
@@ -565,9 +685,16 @@ function Sidebar({ step }: { step: Step }) {
         <StepIndicator
           index={4}
           active={step === 4}
-          completed={false}
+          completed={step > 4}
           title="打包下载"
           desc="生成资源包"
+        />
+        <StepIndicator
+          index={5}
+          active={step === 5}
+          completed={false}
+          title="生成命令"
+          desc="游戏内播放"
         />
       </div>
     </aside>
@@ -587,6 +714,7 @@ export default function AudioPackGenerator() {
     key: DEFAULT_KEY,
     desc: "",
     platform: "java",
+    javaPackFormat: DEFAULT_JAVA_PACK_FORMAT,
     iconFile: null,
     iconPreviewUrl: null,
     modifyVanilla: false,
@@ -608,25 +736,95 @@ export default function AudioPackGenerator() {
     percent: 0,
     error: null,
   });
+  const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
 
   const nameCount = meta.name.length;
-  const descCount = meta.desc.length;
+  const descLimit = getDescLimit(meta.platform);
+  const descSuffix = buildPackDescription(meta.desc);
+  const descCount = descSuffix.length;
+  const descInputMaxLength = Math.max(0, descLimit - AUTO_DESC_SUFFIX.length - (meta.desc.trim() ? 1 : 0));
 
   const fileCount = files.length;
   const canStartProcess = fileCount > 0;
 
-  useEffect(() => {
-    if (meta.platform !== "java" && meta.modifyVanilla) {
-      setMeta((prev) => ({ ...prev, modifyVanilla: false }));
+  const copyCommand = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.setAttribute("readonly", "true");
+      el.style.position = "fixed";
+      el.style.left = "-9999px";
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
     }
-  }, [meta.platform, meta.modifyVanilla]);
+
+    setCopiedCommand(text);
+    window.setTimeout(() => setCopiedCommand((prev) => (prev === text ? null : prev)), 1200);
+  };
+
+  const downloadCommandsTxt = () => {
+    const safeName = meta.name.trim() || "SoundPack";
+    const key = normalizeKey(meta.key);
+    const soundNames = files.map((f) => {
+      if (meta.modifyVanilla) {
+        const event = f.vanillaEvent.trim();
+        return event || `${key}.${f.newName}`;
+      }
+      return `${key}.${f.newName}`;
+    });
+
+    const linesOldJava = soundNames.map((s) => `/playsound ${s} @a ~ ~ ~ 10000`);
+    const linesNewJava = soundNames.map((s) => `/playsound ${s} record @a ~ ~ ~ 10000`);
+    const linesStopJava = soundNames.map((s) => `/stopsound @a record ${s}`);
+    const linesBedrock = soundNames.map((s) => `/playsound ${s} @a ~ ~ ~ 10000`);
+    const linesStopBedrock = soundNames.map((s) => `/stopsound @a ${s}`);
+
+    const content =
+      meta.platform === "java"
+        ? [
+            `主Key: ${key}`,
+            "",
+            "Java 1.7.10 及以下",
+            ...(linesOldJava.length ? linesOldJava : ["暂无音频文件"]),
+            "",
+            "Java 1.8 及以上",
+            ...(linesNewJava.length ? linesNewJava : ["暂无音频文件"]),
+            "",
+            "Java 停止声音 (1.9.3 及以上支持)",
+            ...(linesStopJava.length ? linesStopJava : ["暂无音频文件"]),
+            "",
+          ].join("\n")
+        : [
+            `主Key: ${key}`,
+            "",
+            "基岩版",
+            ...(linesBedrock.length ? linesBedrock : ["暂无音频文件"]),
+            "",
+            "基岩版 停止声音",
+            ...linesStopBedrock,
+            "",
+          ].join("\n");
+
+    saveAs(new Blob([content], { type: "text/plain;charset=utf-8" }), `${safeName}_playsound.txt`);
+  };
+
+  useEffect(() => {
+    setMeta((prev) => {
+      const nextDesc = clampDescForPlatform(prev.desc, meta.platform);
+      return nextDesc === prev.desc ? prev : { ...prev, desc: nextDesc };
+    });
+  }, [meta.platform]);
 
   useEffect(() => {
     if (!meta.modifyVanilla) return;
-    setVanillaEventOptions(VANILLA_EVENT_OPTIONS);
+    setVanillaEventOptions(meta.platform === "bedrock" ? BEDROCK_VANILLA_EVENT_OPTIONS : JAVA_VANILLA_EVENT_OPTIONS);
     setVanillaEventLoading(false);
     setVanillaEventLoadFailed(false);
-  }, [meta.modifyVanilla]);
+  }, [meta.modifyVanilla, meta.platform]);
 
   useEffect(() => {
     if (!meta.iconFile) {
@@ -715,6 +913,18 @@ export default function AudioPackGenerator() {
     };
   }, [overlayActive]);
 
+  useEffect(() => {
+    if (step < 2) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [step]);
+
   const resetAll = () => {
     setStep(1);
     setFiles([]);
@@ -723,6 +933,7 @@ export default function AudioPackGenerator() {
       key: DEFAULT_KEY,
       desc: "",
       platform: "java",
+      javaPackFormat: DEFAULT_JAVA_PACK_FORMAT,
       iconFile: null,
       iconPreviewUrl: null,
       modifyVanilla: false,
@@ -749,18 +960,12 @@ export default function AudioPackGenerator() {
       }
       const { width, height } = await getImageNaturalSize(file);
       const isSquare = width === height;
-      const within = width >= 64 && height >= 64 && width <= 256 && height <= 256;
-      if (isSquare && within) {
-        setMeta((prev) => ({ ...prev, iconFile: file }));
-        return;
-      }
       if (!isSquare) {
         alert(`封面必须是 1:1 正方形（当前 ${width}×${height}）。`);
         return;
       }
       const resized = await resizePngToSquare(file, 256);
       setMeta((prev) => ({ ...prev, iconFile: resized }));
-      alert(`封面已自动调整为 256×256（原图 ${width}×${height}）。`);
     } catch {
       alert("图片读取失败，请重新选择 PNG 图片。");
     }
@@ -815,10 +1020,6 @@ export default function AudioPackGenerator() {
     if (target === 3 && meta.modifyVanilla) {
       if (files.length === 0) {
         alert("请先添加音频文件");
-        return;
-      }
-      if (files.some((f) => !f.vanillaEvent.trim())) {
-        alert("请为所有文件选择替换的原版事件，或删除不需要的文件。");
         return;
       }
     }
@@ -925,17 +1126,19 @@ export default function AudioPackGenerator() {
       ];
     }
 
+    const key = normalizeKey(meta.key);
     return [
       { icon: <FileIcon className="h-3 w-3" />, text: "manifest.json" },
       { icon: <ImageIcon className="h-3 w-3" />, text: "pack_icon.png" },
       { icon: <FileIcon className="h-3 w-3" />, text: "sounds/sound_definitions.json" },
-      { icon: <Folder className="h-3 w-3" />, text: "sounds/custom/..." },
+      { icon: <Folder className="h-3 w-3" />, text: `sounds/${key}/...` },
     ];
   };
 
   const downloadPack = async () => {
     const zip = new JSZip();
     const safeName = meta.name.trim() || "SoundPack";
+    const outputExt = meta.platform === "bedrock" ? "mcpack" : "zip";
 
     const readyFiles = files.filter((f) => f.processedBlob && f.status === "done");
     if (readyFiles.length !== files.length) {
@@ -944,12 +1147,9 @@ export default function AudioPackGenerator() {
     }
 
     if (meta.platform === "java") {
-      const mcmeta = {
-        pack: {
-          pack_format: 15,
-          description: meta.desc.trim() || "Generated by MC AudioGen",
-        },
-      };
+      const parsedPackFormat = Number.parseInt(meta.javaPackFormat, 10);
+      const packFormat = Number.isFinite(parsedPackFormat) && parsedPackFormat > 0 ? parsedPackFormat : 15;
+      const mcmeta = buildJavaPackMcmeta(packFormat, buildPackDescription(meta.desc));
       zip.file("pack.mcmeta", JSON.stringify(mcmeta, null, 2));
 
       if (meta.iconFile) {
@@ -976,13 +1176,14 @@ export default function AudioPackGenerator() {
         ?.folder("minecraft")
         ?.file("sounds.json", JSON.stringify(soundsJson, null, 2));
     } else {
+      const key = normalizeKey(meta.key);
       const uuid1 = uuid();
       const uuid2 = uuid();
       const manifest = {
         format_version: 2,
         header: {
           name: safeName,
-          description: meta.desc.trim() || "",
+          description: buildPackDescription(meta.desc),
           uuid: uuid1,
           version: [1, 0, 0],
           min_engine_version: [1, 16, 0],
@@ -1002,20 +1203,24 @@ export default function AudioPackGenerator() {
         zip.file("pack_icon.png", iconBuffer);
       }
 
-      const soundFolder = zip.folder("sounds")?.folder("custom");
+      const soundFolder = zip.folder("sounds")?.folder(key);
       if (!soundFolder) throw new Error("zip folder init failed");
       for (const f of readyFiles) {
         soundFolder.file(`${f.newName}.ogg`, f.processedBlob as Blob);
       }
 
-      const definitions = buildBedrockSoundDefinitions(readyFiles.map((f) => ({ newName: f.newName })));
+      const definitions = buildBedrockSoundDefinitions(
+        key,
+        readyFiles.map((f) => ({ newName: f.newName, vanillaEvent: f.vanillaEvent })),
+        meta.modifyVanilla
+      );
       zip
         .folder("sounds")
         ?.file("sound_definitions.json", JSON.stringify(definitions, null, 2));
     }
 
     const content = await zip.generateAsync({ type: "blob" });
-    saveAs(content, `${safeName}.zip`);
+    saveAs(content, `${safeName}.${outputExt}`);
   };
 
   return (
@@ -1065,13 +1270,15 @@ export default function AudioPackGenerator() {
                         <input
                           className="w-full rounded-xl border-2 border-transparent bg-slate-50 px-4 py-3 pr-16 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
                           placeholder="例如：我的世界原声"
-                          maxLength={6}
+                          maxLength={NAME_MAX_LENGTH}
                           value={meta.name}
-                          onChange={(e) => setMeta((prev) => ({ ...prev, name: clampText(e.target.value, 6) }))}
+                          onChange={(e) =>
+                            setMeta((prev) => ({ ...prev, name: clampText(e.target.value, NAME_MAX_LENGTH) }))
+                          }
                           required
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                          {nameCount}/6
+                          {nameCount}/{NAME_MAX_LENGTH}
                         </span>
                       </div>
                     </div>
@@ -1125,31 +1332,57 @@ export default function AudioPackGenerator() {
                       </div>
                     </div>
 
-                    <div className="col-span-2">
+                    <div>
                       {meta.platform === "java" ? (
-                        <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                          <div>
-                            <div className="text-sm font-bold text-slate-700">修改原版音频? (Java 独占)</div>
-                            <div className="text-xs text-slate-400">
-                              开启后可替换原版声音事件，如受伤、走路等。
-                            </div>
-                          </div>
-
-                          <label className="flex cursor-pointer items-center gap-3 select-none">
-                            <div className="relative">
-                              <input
-                                type="checkbox"
-                                className="peer sr-only"
-                                checked={meta.modifyVanilla}
-                                onChange={(e) => setMeta((prev) => ({ ...prev, modifyVanilla: e.target.checked }))}
-                              />
-                              <div className="h-7 w-12 rounded-full bg-slate-200 transition peer-checked:bg-sky-400">
-                                <div className="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" />
-                              </div>
-                            </div>
+                        <>
+                          <label className="mb-2 block text-sm font-bold text-slate-600">
+                            资源包版本 <span className="text-red-400">*</span>
                           </label>
-                        </div>
+                          <div className="relative">
+                            <select
+                              className="w-full appearance-none rounded-xl border-2 border-transparent bg-slate-50 px-4 py-3 pr-10 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
+                              value={meta.javaPackFormat}
+                              onChange={(e) => setMeta((prev) => ({ ...prev, javaPackFormat: e.target.value }))}
+                            >
+                              {JAVA_PACK_FORMAT_OPTIONS.map((opt) => (
+                                <option key={opt.packFormat} value={String(opt.packFormat)}>
+                                  {opt.version}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          </div>
+                          <p className="ml-1 mt-1.5 text-xs text-slate-400">
+                            不会影响新版本的使用；但如果版本不匹配，游戏内可能会显示为“旧版资源包”，并出现兼容性问题。
+                          </p>
+                        </>
                       ) : null}
+                    </div>
+
+                    <div className="col-span-2">
+                      <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        <div>
+                          <div className="text-sm font-bold text-slate-700">修改原版音频?</div>
+                          <div className="text-xs text-slate-400">
+                            {meta.platform === "bedrock"
+                              ? "开启后可替换基岩版原版声音事件。"
+                              : "开启后可替换原版声音事件，如受伤、走路等。"}
+                          </div>
+                        </div>
+
+                        <label className="flex cursor-pointer items-center gap-3 select-none">
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              className="peer sr-only"
+                              checked={meta.modifyVanilla}
+                              onChange={(e) => setMeta((prev) => ({ ...prev, modifyVanilla: e.target.checked }))}
+                            />
+                            <div className="h-7 w-12 rounded-full bg-slate-200 transition peer-checked:bg-sky-400" />
+                            <div className="pointer-events-none absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" />
+                          </div>
+                        </label>
+                      </div>
                     </div>
 
                     <div className="col-span-2">
@@ -1158,12 +1391,15 @@ export default function AudioPackGenerator() {
                         <input
                           className="w-full rounded-xl border-2 border-transparent bg-slate-50 px-4 py-3 pr-16 text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
                           placeholder="简短描述..."
-                          maxLength={20}
+                          maxLength={descInputMaxLength}
                           value={meta.desc}
-                          onChange={(e) => setMeta((prev) => ({ ...prev, desc: clampText(e.target.value, 20) }))}
+                          onChange={(e) => {
+                            const next = clampDescForPlatform(e.target.value, meta.platform);
+                            setMeta((prev) => ({ ...prev, desc: next }));
+                          }}
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                          {descCount}/20
+                          {descCount}/{descLimit}
                         </span>
                       </div>
                     </div>
@@ -1320,7 +1556,15 @@ export default function AudioPackGenerator() {
                   className="inline-flex items-center rounded-xl bg-sky-400 px-8 py-4 text-lg font-bold text-white shadow-xl shadow-sky-200 transition hover:-translate-y-0.5 hover:bg-sky-300"
                 >
                   <Download className="mr-2 h-5 w-5" />
-                  下载资源包 (.zip)
+                  下载资源包 (.{meta.platform === "bedrock" ? "mcpack" : "zip"})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => goToStep(5)}
+                  className="mt-4 inline-flex items-center rounded-xl bg-slate-900 px-6 py-3 text-sm font-bold text-white transition hover:bg-slate-800"
+                >
+                  下一步：生成命令 <ArrowRight className="ml-2 h-4 w-4" />
                 </button>
 
                 <button
@@ -1330,6 +1574,124 @@ export default function AudioPackGenerator() {
                 >
                   创建新的资源包
                 </button>
+              </div>
+            ) : null}
+
+            {step === 5 ? (
+              <div className="mx-auto flex h-full max-w-3xl flex-col">
+                <div className="mb-6 flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="mb-2 text-3xl font-extrabold text-slate-800">生成命令</h2>
+                    <p className="text-sm text-slate-500">在游戏内使用 /playsound 播放资源包里的声音。</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={downloadCommandsTxt}
+                    className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800"
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    下载 TXT
+                  </button>
+                </div>
+
+                {(() => {
+                  const key = normalizeKey(meta.key);
+                  const soundNames = files.map((f) => {
+                    if (meta.modifyVanilla) {
+                      const event = f.vanillaEvent.trim();
+                      return event || `${key}.${f.newName}`;
+                    }
+                    return `${key}.${f.newName}`;
+                  });
+
+                  const linesOldJava = soundNames.map((s) => `/playsound ${s} @a ~ ~ ~ 10000`);
+                  const linesNewJava = soundNames.map((s) => `/playsound ${s} record @a ~ ~ ~ 10000`);
+                  const linesStopJava = soundNames.map((s) => `/stopsound @a record ${s}`);
+                  const linesBedrock = soundNames.map((s) => `/playsound ${s} @a ~ ~ ~ 10000`);
+                  const linesStopBedrock = soundNames.map((s) => `/stopsound @a ${s}`);
+
+                  const CommandList = ({
+                    lines,
+                  }: {
+                    lines: string[];
+                  }) => {
+                    if (lines.length === 0) {
+                      return (
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-400">
+                          暂无音频文件
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <ul className="space-y-2">
+                        {lines.map((cmd, idx) => (
+                          <li
+                            key={`${idx}-${cmd}`}
+                            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2"
+                          >
+                            <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-slate-700">
+                              {cmd}
+                            </code>
+                            <button
+                              type="button"
+                              onClick={() => void copyCommand(cmd)}
+                              className="inline-flex shrink-0 items-center rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-slate-800"
+                            >
+                              <Copy className="mr-1.5 h-3.5 w-3.5" />
+                              {copiedCommand === cmd ? "已复制" : "复制"}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    );
+                  };
+
+                  return meta.platform === "java" ? (
+                    <div className="grid gap-6">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+                        <div className="mb-2 text-sm font-extrabold text-slate-700">Java 1.7.10 及以下</div>
+                        <CommandList lines={linesOldJava} />
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+                        <div className="mb-2 text-sm font-extrabold text-slate-700">Java 1.8 及以上</div>
+                        <CommandList lines={linesNewJava} />
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+                        <div className="mb-2 text-sm font-extrabold text-slate-700">停止声音 (1.9.3 及以上支持)</div>
+                        <CommandList lines={linesStopJava} />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid gap-6">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+                        <div className="mb-2 text-sm font-extrabold text-slate-700">基岩版</div>
+                        <CommandList lines={linesBedrock} />
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+                        <div className="mb-2 text-sm font-extrabold text-slate-700">停止声音</div>
+                        <CommandList lines={linesStopBedrock} />
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <div className="mt-8 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => goToStep(4)}
+                    className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+                  >
+                    上一步
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetAll}
+                    className="inline-flex items-center rounded-xl bg-sky-400 px-6 py-3 text-sm font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:bg-sky-300"
+                  >
+                    创建新的资源包
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
@@ -1422,7 +1784,7 @@ function FileDropZone({
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <div className="mb-1 text-xs text-sky-500">替换原版事件</div>
+                    <div className="mb-1 text-xs text-sky-500">替换原版事件（可选）</div>
                     <input
                       list="vanilla-events"
                       placeholder={
@@ -1430,7 +1792,7 @@ function FileDropZone({
                           ? "正在加载事件列表..."
                           : vanillaEventLoadFailed
                             ? "事件列表加载失败，请刷新页面"
-                            : "选择事件..."
+                            : "留空则不替换"
                       }
                       className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
                       value={f.vanillaEvent}
