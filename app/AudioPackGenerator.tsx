@@ -14,14 +14,14 @@ import {
   File as FileIcon,
   Folder,
   Image as ImageIcon,
-  Music,
   Package,
   Play,
   Plus,
   Trash2,
   UploadCloud,
+  X,
 } from "lucide-react";
-import Image from "next/image";
+import NextImage from "next/image";
 import { pinyin } from "pinyin-pro";
 import {
   useEffect,
@@ -45,6 +45,13 @@ type FileItem = {
   status: "pending" | "processing" | "done" | "error";
   vanillaEvent: string;
   processedBlob: Blob | null;
+};
+
+type ConvertLogItem = {
+  id: string;
+  at: number;
+  level: "info" | "error";
+  message: string;
 };
 
 type PackMeta = {
@@ -473,7 +480,7 @@ function FfmpegBlockingOverlay({
   const title = isError ? "转换器加载失败" : "正在加载音频转换器";
   const desc = isError
     ? `已重试 ${maxRetries} 次仍失败，请刷新页面后再试。`
-    : "加载FFmpeg较慢，请耐心等待，期间将暂时禁止操作。";
+    : "加载FFmpeg中，请耐心等待，加载期间禁止任何操作。";
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const lastActiveRef = useRef<HTMLElement | null>(null);
 
@@ -572,6 +579,122 @@ function FfmpegBlockingOverlay({
   );
 }
 
+function DisclaimerOverlay({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const lastActiveRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    lastActiveRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.focus();
+    return () => {
+      lastActiveRef.current?.focus?.();
+    };
+  }, []);
+
+  const onKeyDownCapture = (e: ReactKeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+      return;
+    }
+
+    if (e.key !== "Tab") return;
+    const dialog = dialogRef.current;
+    if (!dialog) {
+      e.preventDefault();
+      return;
+    }
+
+    const focusables = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((el) => !el.hasAttribute("disabled") && el.tabIndex >= 0);
+
+    if (focusables.length === 0) {
+      e.preventDefault();
+      dialog.focus();
+      return;
+    }
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+
+    if (e.shiftKey) {
+      if (active === first || active === dialog) {
+        e.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+
+    if (active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/40 p-6 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onKeyDownCapture={onKeyDownCapture}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="免责声明"
+        tabIndex={-1}
+        className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl outline-none"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-base font-extrabold text-slate-800">免责声明</div>
+            <div className="mt-1 text-sm text-slate-500">关于文件与转换方式的说明</div>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3 text-sm text-slate-600">
+          <p className="wrap-break-word">
+            这是一个在线 Minecraft 音频包生成器。音频格式转换在浏览器端使用 FFmpeg（WebAssembly）直接完成，
+            无需上传服务器。
+          </p>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[13px] text-slate-700">
+            <div className="font-bold">要点</div>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              <li>音频文件在本地处理，不会被上传到服务器。</li>
+              <li>首次加载会下载 FFmpeg 相关 wasm 资源，可能较慢。</li>
+              <li>转换效果与文件质量、浏览器环境有关。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800"
+          >
+            我知道了
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IconPreview({
   iconPreviewUrl,
   onPick,
@@ -610,7 +733,7 @@ function IconPreview({
           ].join(" ")}
         >
           {iconPreviewUrl ? (
-            <Image
+            <NextImage
               src={iconPreviewUrl}
               alt="pack icon"
               fill
@@ -671,8 +794,8 @@ function MobileStepBar({
       <div className="rounded-3xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center gap-3 px-3 py-3 sm:px-4 sm:py-4 justify-between">
           <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-linear-to-br from-sky-400 to-sky-500 text-white shadow-lg">
-              <Music className="h-4.5 w-4.5" />
+            <div className="flex h-9 w-9 items-center justify-center">
+              <NextImage src="/note_block.png" alt="note block icon" width={18} height={18} className="h-9 w-9" />
             </div>
             <div className="min-w-0">
               <div className="text-sm font-extrabold text-slate-800 sm:text-base">MC SoundsGen</div>
@@ -757,8 +880,8 @@ function Sidebar({
     <aside className="hidden w-64 shrink-0 flex-col space-y-8 md:flex">
       <div className="space-y-3">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-sky-400 to-sky-500 text-white shadow-lg">
-            <Music className="h-5 w-5" />
+          <div className="flex h-10 w-10 items-center justify-center">
+            <NextImage src="/note_block.png" alt="note block icon" width={20} height={20} className="h-10 w-10" />
           </div>
           <div>
             <h1 className="text-xl font-extrabold text-slate-800">MC SoundsGen</h1>
@@ -854,6 +977,9 @@ export default function AudioPackGenerator() {
     percent: 0,
     error: null,
   });
+  const [convertLogs, setConvertLogs] = useState<ConvertLogItem[]>([]);
+  const logsEndRef = useRef<HTMLDivElement | null>(null);
+  const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
 
   const nameCount = meta.name.length;
@@ -864,6 +990,41 @@ export default function AudioPackGenerator() {
 
   const fileCount = files.length;
   const canStartProcess = fileCount > 0;
+
+  const pushConvertLog = (message: string, level: ConvertLogItem["level"] = "info") => {
+    setConvertLogs((prev) => {
+      const next: ConvertLogItem[] = [
+        ...prev,
+        { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, at: Date.now(), level, message },
+      ];
+      return next.length > 300 ? next.slice(next.length - 300) : next;
+    });
+  };
+
+  useEffect(() => {
+    if (step !== 3) return;
+    logsEndRef.current?.scrollIntoView({ block: "end" });
+  }, [step, convertLogs.length]);
+
+  useEffect(() => {
+    if (!ffmpegLoaded) return;
+    try {
+      const key = "mcsd_disclaimer_ack_v1";
+      const acknowledged = localStorage.getItem(key) === "1";
+      if (!acknowledged) setDisclaimerOpen(true);
+    } catch {
+      setDisclaimerOpen(true);
+    }
+  }, [ffmpegLoaded]);
+
+  const closeDisclaimer = () => {
+    setDisclaimerOpen(false);
+    try {
+      localStorage.setItem("mcsd_disclaimer_ack_v1", "1");
+    } catch {
+      void 0;
+    }
+  };
 
   const copyCommand = async (text: string) => {
     try {
@@ -1151,6 +1312,9 @@ export default function AudioPackGenerator() {
     const total = files.length;
     if (total === 0) return;
 
+    setConvertLogs([]);
+    pushConvertLog(`开始处理：共 ${total} 个文件`);
+
     setProcessing({
       title: "正在加载转换器...",
       desc: "首次加载需要下载 wasm 资源，后续会更快。",
@@ -1160,8 +1324,11 @@ export default function AudioPackGenerator() {
     });
 
     try {
+      pushConvertLog("加载转换器中...");
       await ffmpeg.load();
+      pushConvertLog("转换器已就绪");
     } catch {
+      pushConvertLog("转换器加载失败", "error");
       setProcessing((prev) => ({
         ...prev,
         title: "转换器加载失败",
@@ -1183,6 +1350,7 @@ export default function AudioPackGenerator() {
 
     for (let i = 0; i < total; i += 1) {
       const item = files[i];
+      pushConvertLog(`[${i + 1}/${total}] 转换：${item.originalName} -> ${item.newName}.ogg`);
       setFiles((prev) =>
         prev.map((f) => (f.id === item.id ? { ...f, status: "processing" } : f))
       );
@@ -1205,7 +1373,12 @@ export default function AudioPackGenerator() {
             f.id === item.id ? { ...f, status: "done", processedBlob: converted.blob } : f
           )
         );
+        pushConvertLog(`[${i + 1}/${total}] 完成：${item.newName}.ogg`);
       } catch (err) {
+        pushConvertLog(
+          `[${i + 1}/${total}] 失败：${err instanceof Error ? err.message : "convert failed"}`,
+          "error"
+        );
         setFiles((prev) =>
           prev.map((f) => (f.id === item.id ? { ...f, status: "error" } : f))
         );
@@ -1222,6 +1395,7 @@ export default function AudioPackGenerator() {
       }
     }
 
+    pushConvertLog("全部文件转换完成，生成配置文件...");
     setProcessing((prev) => ({
       ...prev,
       title: "生成配置文件...",
@@ -1231,6 +1405,7 @@ export default function AudioPackGenerator() {
     }));
 
     setFiles((prev) => prev.map((f) => ({ ...f, processedBlob: results[f.id] ?? f.processedBlob })));
+    pushConvertLog("准备进入打包下载步骤");
     goToStep(4);
   };
 
@@ -1350,6 +1525,7 @@ export default function AudioPackGenerator() {
           maxRetries={3}
         />
       ) : null}
+      {disclaimerOpen ? <DisclaimerOverlay onClose={closeDisclaimer} /> : null}
       <div
         ref={contentRef}
         aria-hidden={overlayActive}
@@ -1605,45 +1781,77 @@ export default function AudioPackGenerator() {
             ) : null}
 
             {step === 3 ? (
-              <div className="mx-auto flex h-full max-w-lg flex-col items-center justify-center text-center">
-                <div className="relative mb-6 h-20 w-20">
-                  <div className="absolute inset-0 rounded-full border-4 border-slate-100" />
-                  <div
-                    className={[
-                      "absolute inset-0 rounded-full border-4 border-sky-400 border-t-transparent",
-                      processing.error ? "opacity-30" : "animate-spin",
-                    ].join(" ")}
-                  />
-                  <div className="absolute inset-0 flex items-center justify-center font-bold text-sky-500">
-                    {processing.percent}%
+              <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-hidden">
+                <div className="shrink-0 rounded-2xl border border-slate-200 bg-white p-6">
+                  <div className="flex flex-col items-center justify-center text-center">
+                    <div className="relative mb-6 h-20 w-20">
+                      <div className="absolute inset-0 rounded-full border-4 border-slate-100" />
+                      <div
+                        className={[
+                          "absolute inset-0 rounded-full border-4 border-sky-400 border-t-transparent",
+                          processing.error ? "opacity-30" : "animate-spin",
+                        ].join(" ")}
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center font-bold text-sky-500">
+                        {processing.percent}%
+                      </div>
+                    </div>
+
+                    <h2 className="mb-2 text-2xl font-extrabold text-slate-800">{processing.title}</h2>
+                    <p className="mb-8 text-slate-500">{processing.desc}</p>
+
+                    <div className="mb-4 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full bg-sky-400 transition-all duration-300"
+                        style={{ width: `${processing.percent}%` }}
+                      />
+                    </div>
+
+                    <div className="rounded border border-slate-200 bg-slate-50 px-3 py-1 font-mono text-xs text-slate-400">
+                      {processing.currentFile}
+                    </div>
+
+                    {processing.error ? (
+                      <div className="mt-6 flex gap-3">
+                        <button
+                          type="button"
+                          onClick={() => goToStep(2)}
+                          className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800"
+                        >
+                          返回修改
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
-                <h2 className="mb-2 text-2xl font-extrabold text-slate-800">{processing.title}</h2>
-                <p className="mb-8 text-slate-500">{processing.desc}</p>
-
-                <div className="mb-4 h-3 w-full overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-full bg-sky-400 transition-all duration-300"
-                    style={{ width: `${processing.percent}%` }}
-                  />
-                </div>
-
-                <div className="rounded border border-slate-200 bg-slate-50 px-3 py-1 font-mono text-xs text-slate-400">
-                  {processing.currentFile}
-                </div>
-
-                {processing.error ? (
-                  <div className="mt-6 flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => goToStep(2)}
-                      className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800"
-                    >
-                      返回修改
-                    </button>
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="shrink-0 border-b border-slate-100 px-4 py-3">
+                    <div className="text-sm font-extrabold text-slate-800">转换日志</div>
+                    <div className="text-[11px] font-bold text-slate-400 sm:text-xs">仅显示最近 300 条</div>
                   </div>
-                ) : null}
+                  <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-4 py-3 font-mono text-[11px] text-slate-600 sm:text-xs">
+                    {convertLogs.length ? (
+                      <div className="space-y-1">
+                        {convertLogs.map((line) => (
+                          <div
+                            key={line.id}
+                            className={line.level === "error" ? "text-red-600" : "text-slate-600"}
+                          >
+                            <span className="text-slate-400">
+                              {new Date(line.at).toLocaleTimeString("zh-CN", { hour12: false })}
+                            </span>
+                            <span className="px-2 text-slate-300">|</span>
+                            <span className="wrap-break-word">{line.message}</span>
+                          </div>
+                        ))}
+                        <div ref={logsEndRef} />
+                      </div>
+                    ) : (
+                      <div className="text-slate-400">暂无日志</div>
+                    )}
+                  </div>
+                </div>
               </div>
             ) : null}
 
