@@ -42,6 +42,7 @@ type FileItem = {
   id: string;
   originalFile: File;
   originalName: string;
+  hash: string;
   newName: string;
   status: "pending" | "processing" | "done" | "error";
   vanillaEvent: string;
@@ -178,6 +179,11 @@ function normalizeKey(input: string) {
   return cleaned.length ? cleaned.slice(0, 5) : DEFAULT_KEY;
 }
 
+function sanitizeSoundName(input: string) {
+  const cleaned = input.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return clampText(cleaned, 8);
+}
+
 function buildJavaPackMcmeta(packFormat: number, description: string) {
   if (packFormat >= 65) {
     return {
@@ -243,24 +249,25 @@ function processFileName(name: string) {
   return clampText(res || "sound", 8);
 }
 
-function ensureUniqueName(base: string, existing: Set<string>) {
-  const normalizedBase = clampText(base || "sound", 8);
-  if (!existing.has(normalizedBase)) return normalizedBase;
-
-  let counter = 1;
-  while (counter < 1000) {
-    const suffix = String(counter);
-    const baseLen = Math.max(1, 8 - suffix.length);
-    const candidate = `${normalizedBase.slice(0, baseLen)}${suffix}`;
-    if (!existing.has(candidate)) return candidate;
-    counter += 1;
-  }
-
-  return `${normalizedBase.slice(0, 6)}${Math.random().toString(16).slice(2, 4)}`;
-}
-
 function readFileAsArrayBuffer(file: File) {
   return file.arrayBuffer();
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    out += (bytes[i] ?? 0).toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+async function getFileSha256(file: File): Promise<string> {
+  if (typeof crypto === "undefined" || !("subtle" in crypto) || !crypto.subtle) {
+    throw new Error("crypto.subtle is not available");
+  }
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return bytesToHex(new Uint8Array(digest));
 }
 
 async function readFileHead(file: File, maxBytes: number): Promise<Uint8Array> {
@@ -976,7 +983,7 @@ function MobileStepBar({
   ];
 
   return (
-    <div className="md:hidden">
+    <div className="lg:hidden">
       <div className="rounded-3xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center gap-3 px-3 py-3 sm:px-4 sm:py-4 justify-between">
           <div className="flex items-center gap-2">
@@ -1063,7 +1070,7 @@ function Sidebar({
   ffmpegMaxRetries: number;
 }) {
   return (
-    <aside className="hidden w-64 shrink-0 flex-col space-y-8 md:flex">
+    <aside className="hidden w-64 shrink-0 flex-col space-y-8 lg:flex">
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center">
@@ -1131,6 +1138,8 @@ function Sidebar({
 export default function AudioPackGenerator() {
   const [step, setStep] = useState<Step>(1);
   const [files, setFiles] = useState<FileItem[]>([]);
+  const filesRef = useRef<FileItem[]>([]);
+  const addingFilesRef = useRef(false);
   const snapshot = ffmpeg.getSnapshot();
   const [ffmpegLoaded, setFfmpegLoaded] = useState<boolean>(snapshot.loaded);
   const [ffmpegRetryCount, setFfmpegRetryCount] = useState<number>(0);
@@ -1193,6 +1202,10 @@ export default function AudioPackGenerator() {
       return next.length > 300 ? next.slice(next.length - 300) : next;
     });
   };
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
 
   useEffect(() => {
     if (step !== 3) return;
@@ -1444,34 +1457,76 @@ export default function AudioPackGenerator() {
     }
   };
 
-  const onAddFiles = (list: FileList | null) => {
+  const onAddFiles = async (list: FileList | null) => {
     if (!list || list.length === 0) return;
+    if (addingFilesRef.current) return;
+    addingFilesRef.current = true;
 
-    setFiles((prev) => {
-      const next = [...prev];
-      const used = new Set(next.map((f) => f.newName));
+    try {
+      const incoming = Array.from(list).filter((f) => f.type.startsWith("audio/"));
+      if (incoming.length === 0) return;
 
-      for (const file of Array.from(list)) {
-        if (!file.type.startsWith("audio/")) continue;
+      const current = filesRef.current;
+      const usedNames = new Set(current.map((f) => f.newName));
+      const usedHashes = new Set(current.map((f) => f.hash).filter(Boolean));
+
+      const nextItems: FileItem[] = [];
+      let skippedDuplicate = 0;
+      let skippedNameConflict = 0;
+      let skippedHashError = 0;
+
+      for (const file of incoming) {
+        let hash = "";
+        try {
+          hash = await getFileSha256(file);
+        } catch {
+          skippedHashError += 1;
+          continue;
+        }
+
+        if (usedHashes.has(hash)) {
+          skippedDuplicate += 1;
+          continue;
+        }
+
         const dot = file.name.lastIndexOf(".");
         const originalBase = dot > 0 ? file.name.slice(0, dot) : file.name;
         const base = processFileName(originalBase);
-        const unique = ensureUniqueName(base, used);
-        used.add(unique);
+        const newName = clampText(base || "sound", 8);
 
-        next.push({
+        if (usedNames.has(newName)) {
+          skippedNameConflict += 1;
+          continue;
+        }
+
+        usedHashes.add(hash);
+        usedNames.add(newName);
+        nextItems.push({
           id: buildId(),
           originalFile: file,
           originalName: file.name,
-          newName: unique,
+          hash,
+          newName,
           status: "pending",
           vanillaEvent: "",
           processedBlob: null,
         });
       }
 
-      return next;
-    });
+      if (nextItems.length > 0) {
+        setFiles((prev) => [...prev, ...nextItems]);
+      }
+
+      if (skippedDuplicate > 0 || skippedNameConflict > 0 || skippedHashError > 0) {
+        const parts: string[] = [];
+        if (skippedDuplicate > 0) parts.push(`重复音频 ${skippedDuplicate} 个`);
+        if (skippedNameConflict > 0) parts.push(`命名冲突 ${skippedNameConflict} 个`);
+        if (skippedHashError > 0) parts.push(`哈希失败 ${skippedHashError} 个`);
+        alert(`已跳过：${parts.join("，")}`);
+      }
+    } finally {
+      addingFilesRef.current = false;
+    }
   };
 
   const onRemoveFile = (id: string) => {
@@ -1480,6 +1535,17 @@ export default function AudioPackGenerator() {
 
   const onUpdateVanillaEvent = (id: string, value: string) => {
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, vanillaEvent: value } : f)));
+  };
+
+  const onRenameFile = (id: string, value: string) => {
+    const next = sanitizeSoundName(value);
+    if (!next) return "名称不能为空";
+
+    const current = filesRef.current;
+    if (current.some((f) => f.id !== id && f.newName === next)) return "名称已被占用";
+
+    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, newName: next } : f)));
+    return null;
   };
 
   const goToStep = (target: Step) => {
@@ -1825,7 +1891,7 @@ export default function AudioPackGenerator() {
       <div
         ref={contentRef}
         aria-hidden={overlayActive}
-        className="mx-auto flex h-full max-w-6xl flex-col gap-4 p-4 md:flex-row md:gap-8 md:p-8"
+        className="mx-auto flex h-full max-w-6xl flex-col gap-4 p-4 md:gap-6 md:p-6 lg:flex-row lg:gap-8 lg:p-8"
       >
         <MobileStepBar
           step={step}
@@ -1845,7 +1911,12 @@ export default function AudioPackGenerator() {
         <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
           <TopBar />
 
-          <div className={["flex-1 p-4 md:p-8", step === 5 ? "overflow-hidden" : "overflow-y-auto"].join(" ")}>
+          <div
+            className={[
+              "flex-1 p-4 md:p-6 lg:p-8",
+              step === 5 || step === 3 ? "overflow-hidden" : "overflow-y-auto",
+            ].join(" ")}
+          >
             {step === 1 ? (
               <div className="mx-auto max-w-xl">
                 <div className="mb-8 text-center">
@@ -1856,8 +1927,8 @@ export default function AudioPackGenerator() {
                 <div className="space-y-6">
                   <IconPreview iconPreviewUrl={meta.iconPreviewUrl} onPick={onPickIcon} />
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="col-span-2">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="col-span-1 sm:col-span-2">
                       <label className="mb-2 block text-sm font-bold text-slate-600">
                         音频包名称 <span className="text-red-400">*</span>
                       </label>
@@ -1878,7 +1949,7 @@ export default function AudioPackGenerator() {
                       </div>
                     </div>
 
-                    <div className="col-span-2">
+                    <div className="col-span-1 sm:col-span-2">
                       <label className="mb-2 block text-sm font-bold text-slate-600">
                         主 Key (文件夹名) <span className="text-red-400">*</span>
                       </label>
@@ -1954,7 +2025,7 @@ export default function AudioPackGenerator() {
                       ) : null}
                     </div>
 
-                    <div className="col-span-2">
+                    <div className="col-span-1 sm:col-span-2">
                       <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-4">
                         <div>
                           <div className="text-sm font-bold text-slate-700">修改原版音频?</div>
@@ -1980,7 +2051,7 @@ export default function AudioPackGenerator() {
                       </div>
                     </div>
 
-                    <div className="col-span-2">
+                    <div className="col-span-1 sm:col-span-2">
                       <label className="mb-2 block text-sm font-bold text-slate-600">简介 (可选)</label>
                       <div className="relative">
                         <input
@@ -2015,7 +2086,7 @@ export default function AudioPackGenerator() {
 
             {step === 2 ? (
               <div className="flex h-full flex-col">
-                <div className="mb-6 flex shrink-0 items-center justify-between">
+                <div className="mb-6 flex shrink-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="text-2xl font-extrabold text-slate-800">添加音频文件</h2>
                     <p className="text-sm text-slate-500">
@@ -2032,7 +2103,7 @@ export default function AudioPackGenerator() {
                         multiple
                         accept="audio/*"
                         className="hidden"
-                        onChange={(e) => onAddFiles(e.target.files)}
+                        onChange={(e) => void onAddFiles(e.target.files)}
                       />
                     </label>
                   </div>
@@ -2043,21 +2114,22 @@ export default function AudioPackGenerator() {
                   files={files}
                   onAddFiles={onAddFiles}
                   onRemoveFile={onRemoveFile}
+                  onRenameFile={onRenameFile}
                   onUpdateVanillaEvent={onUpdateVanillaEvent}
                   vanillaEventOptions={vanillaEventOptions}
                   vanillaEventLoading={vanillaEventLoading}
                   vanillaEventLoadFailed={vanillaEventLoadFailed}
                 />
 
-                <div className="mt-4 flex shrink-0 items-center justify-between border-t border-slate-100 pt-6">
+                <div className="mt-4 flex shrink-0 flex-col gap-4 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-sm font-bold text-slate-500">
                     已添加 <span className="text-sky-500">{fileCount}</span> 个文件
                   </span>
-                  <div className="flex gap-3">
+                  <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
                     <button
                       type="button"
                       onClick={() => goToStep(1)}
-                      className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+                      className="inline-flex w-full items-center justify-center rounded-xl px-4 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 sm:w-auto"
                     >
                       上一步
                     </button>
@@ -2066,7 +2138,7 @@ export default function AudioPackGenerator() {
                       disabled={!canStartProcess}
                       onClick={() => void startProcessing()}
                       className={[
-                        "inline-flex items-center rounded-xl bg-sky-400 px-6 py-3 font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:-translate-y-0.5 hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:hover:translate-y-0",
+                        "inline-flex w-full items-center justify-center rounded-xl bg-sky-400 px-6 py-3 font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:-translate-y-0.5 hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:hover:translate-y-0 sm:w-auto",
                       ].join(" ")}
                     >
                       开始处理 <Play className="ml-2 h-4 w-4" />
@@ -2077,17 +2149,17 @@ export default function AudioPackGenerator() {
             ) : null}
 
             {step === 3 ? (
-              <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-hidden">
+              <div className="mx-auto flex h-full min-h-0 max-w-5xl flex-col gap-4 overflow-hidden">
                 <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                  <div className="border-b border-slate-100 px-4 py-3">
-                    <div className="flex items-start justify-between gap-4">
+                  <div className="border-b border-slate-100 px-3 py-3 sm:px-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                       <div>
                         <div className="text-sm font-extrabold text-slate-800">格式转换进度</div>
                         <div className="text-[11px] font-bold text-slate-400 sm:text-xs">
                           总进度 {processing.percent}% · 已完成 {finishedAudioCount}/{fileCount}
                         </div>
                       </div>
-                      <div className="rounded bg-slate-50 px-3 py-1 font-mono text-xs text-slate-400">
+                      <div className="wrap-break-word max-w-full rounded bg-slate-50 px-3 py-1 font-mono text-[11px] text-slate-400 sm:text-xs">
                         {processing.currentFile}
                       </div>
                     </div>
@@ -2112,7 +2184,7 @@ export default function AudioPackGenerator() {
                     ) : null}
                   </div>
 
-                  <div className="max-h-80 overflow-y-auto">
+                  <div className="max-h-56 overflow-y-auto sm:max-h-80">
                     {files.length ? (
                       <div className="divide-y divide-slate-100">
                         {files.map((f) => {
@@ -2133,7 +2205,7 @@ export default function AudioPackGenerator() {
                             viewStage === "loading" ||
                             viewStage === "converting";
                           const rowClass = [
-                            "flex items-center justify-between gap-3 px-4 py-3 transition-colors duration-1000",
+                            "flex items-center justify-between gap-3 px-3 py-2.5 transition-colors duration-1000 sm:px-4 sm:py-3",
                             rowActive ? "bg-sky-50" : "bg-white",
                           ].join(" ");
 
@@ -2172,7 +2244,7 @@ export default function AudioPackGenerator() {
                         })}
                       </div>
                     ) : (
-                      <div className="px-4 py-6 text-center text-sm font-bold text-slate-400">
+                      <div className="px-3 py-6 text-center text-sm font-bold text-slate-400 sm:px-4">
                         暂无音频
                       </div>
                     )}
@@ -2180,11 +2252,11 @@ export default function AudioPackGenerator() {
                 </div>
 
                 <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                  <div className="shrink-0 border-b border-slate-100 px-4 py-3">
+                  <div className="shrink-0 border-b border-slate-100 px-3 py-3 sm:px-4">
                     <div className="text-sm font-extrabold text-slate-800">转换日志</div>
                     <div className="text-[11px] font-bold text-slate-400 sm:text-xs">仅显示最近 300 条</div>
                   </div>
-                  <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-4 py-3 font-mono text-[11px] text-slate-600 sm:text-xs">
+                  <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 px-3 py-3 font-mono text-[10px] text-slate-600 sm:px-4 sm:text-xs">
                     {convertLogs.length ? (
                       <div className="space-y-1">
                         {convertLogs.map((line) => (
@@ -2238,7 +2310,7 @@ export default function AudioPackGenerator() {
                 <button
                   type="button"
                   onClick={() => void downloadPack()}
-                  className="inline-flex items-center rounded-xl bg-sky-400 px-8 py-4 text-lg font-bold text-white shadow-xl shadow-sky-200 transition hover:-translate-y-0.5 hover:bg-sky-300"
+                  className="inline-flex w-full max-w-sm items-center justify-center rounded-xl bg-sky-400 px-6 py-3 text-base font-bold text-white shadow-xl shadow-sky-200 transition hover:-translate-y-0.5 hover:bg-sky-300 sm:w-auto sm:px-8 sm:py-4 sm:text-lg"
                 >
                   <Download className="mr-2 h-5 w-5" />
                   下载资源包 (.{meta.platform === "bedrock" ? "mcpack" : "zip"})
@@ -2410,6 +2482,7 @@ function FileDropZone({
   files,
   onAddFiles,
   onRemoveFile,
+  onRenameFile,
   onUpdateVanillaEvent,
   vanillaEventOptions,
   vanillaEventLoading,
@@ -2417,14 +2490,96 @@ function FileDropZone({
 }: {
   modifyVanilla: boolean;
   files: FileItem[];
-  onAddFiles: (list: FileList | null) => void;
+  onAddFiles: (list: FileList | null) => void | Promise<void>;
   onRemoveFile: (id: string) => void;
+  onRenameFile: (id: string, value: string) => string | null;
   onUpdateVanillaEvent: (id: string, value: string) => void;
   vanillaEventOptions: VanillaEventOption[];
   vanillaEventLoading: boolean;
   vanillaEventLoadFailed: boolean;
 }) {
   const [dragOver, setDragOver] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
+  const [editingError, setEditingError] = useState<string | null>(null);
+  const inlineInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameDialogId, setRenameDialogId] = useState<string | null>(null);
+  const [renameDialogValue, setRenameDialogValue] = useState("");
+  const [renameDialogError, setRenameDialogError] = useState<string | null>(null);
+  const dialogInputRef = useRef<HTMLInputElement | null>(null);
+  const lastActiveRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!renameDialogOpen) return;
+    lastActiveRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    requestAnimationFrame(() => {
+      dialogInputRef.current?.focus();
+    });
+    return () => {
+      lastActiveRef.current?.focus?.();
+    };
+  }, [renameDialogOpen]);
+
+  const beginInlineEdit = (item: FileItem) => {
+    setEditingId(item.id);
+    setEditingValue(item.newName);
+    setEditingError(null);
+    requestAnimationFrame(() => {
+      inlineInputRef.current?.focus();
+      inlineInputRef.current?.select();
+    });
+  };
+
+  const cancelInlineEdit = () => {
+    setEditingId(null);
+    setEditingValue("");
+    setEditingError(null);
+  };
+
+  const commitInlineEdit = (id: string) => {
+    const err = onRenameFile(id, editingValue);
+    if (err) {
+      setEditingError(err);
+      requestAnimationFrame(() => {
+        inlineInputRef.current?.focus();
+        inlineInputRef.current?.select();
+      });
+      return;
+    }
+    cancelInlineEdit();
+  };
+
+  const openRenameDialog = (item: FileItem) => {
+    setRenameDialogId(item.id);
+    setRenameDialogValue(item.newName);
+    setRenameDialogError(null);
+    setRenameDialogOpen(true);
+  };
+
+  const closeRenameDialog = () => {
+    setRenameDialogOpen(false);
+    setRenameDialogId(null);
+    setRenameDialogValue("");
+    setRenameDialogError(null);
+  };
+
+  const submitRenameDialog = () => {
+    if (!renameDialogId) return;
+    const err = onRenameFile(renameDialogId, renameDialogValue);
+    if (err) {
+      setRenameDialogError(err);
+      requestAnimationFrame(() => {
+        dialogInputRef.current?.focus();
+        dialogInputRef.current?.select();
+      });
+      return;
+    }
+    closeRenameDialog();
+  };
+
+  const renameDialogItem = renameDialogId ? (files.find((f) => f.id === renameDialogId) ?? null) : null;
 
   return (
     <div
@@ -2440,7 +2595,7 @@ function FileDropZone({
       onDrop={(e) => {
         e.preventDefault();
         setDragOver(false);
-        onAddFiles(e.dataTransfer.files);
+        void onAddFiles(e.dataTransfer.files);
       }}
     >
       {files.length === 0 ? (
@@ -2511,7 +2666,52 @@ function FileDropZone({
                   </div>
                   <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
                     <ArrowRight className="h-3 w-3 text-sky-500" />
-                    <span className="rounded bg-sky-50 px-1.5 font-mono text-sky-500">{f.newName}.ogg</span>
+                    {editingId === f.id ? (
+                      <div className="min-w-0">
+                        <input
+                          ref={inlineInputRef}
+                          value={editingValue}
+                          onChange={(e) => {
+                            setEditingError(null);
+                            setEditingValue(sanitizeSoundName(e.target.value));
+                          }}
+                          onBlur={() => commitInlineEdit(f.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              commitInlineEdit(f.id);
+                            }
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelInlineEdit();
+                            }
+                          }}
+                          className="w-28 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 outline-none ring-1 ring-sky-200 transition focus:bg-white focus:ring-2 focus:ring-sky-400"
+                        />
+                        {editingError ? (
+                          <div className="mt-1 text-[11px] font-bold text-red-500">{editingError}</div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => openRenameDialog(f)}
+                          className="inline-flex items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 transition hover:bg-sky-100 md:hidden"
+                        >
+                          {f.newName}
+                          <Edit2 className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => beginInlineEdit(f)}
+                          className="hidden items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 transition hover:bg-sky-100 md:inline-flex"
+                        >
+                          {f.newName}
+                          <Edit2 className="h-3 w-3" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
@@ -2527,6 +2727,91 @@ function FileDropZone({
           ))}
         </div>
       )}
+
+      {renameDialogOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-6 backdrop-blur-sm"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeRenameDialog();
+          }}
+          onKeyDownCapture={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              closeRenameDialog();
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submitRenameDialog();
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
+            className="w-full max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-xl outline-none"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-base font-extrabold text-slate-800">重命名音频</div>
+                <div className="mt-1 text-sm text-slate-500">仅支持 a-z、0-9，最多 8 位</div>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={closeRenameDialog}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4">
+              {renameDialogItem ? (
+                <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-bold text-slate-400">音频原名称</div>
+                  <div
+                    className="mt-0.5 truncate text-sm font-bold text-slate-700"
+                    title={renameDialogItem.originalName}
+                  >
+                    {renameDialogItem.originalName}
+                  </div>
+                </div>
+              ) : null}
+              <input
+                ref={dialogInputRef}
+                value={renameDialogValue}
+                onChange={(e) => {
+                  setRenameDialogError(null);
+                  setRenameDialogValue(sanitizeSoundName(e.target.value));
+                }}
+                className="w-full rounded-xl border-2 border-transparent bg-slate-50 px-4 py-3 font-mono text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
+                placeholder="例如：sound1"
+              />
+              {renameDialogError ? (
+                <div className="mt-2 text-sm font-bold text-red-500">{renameDialogError}</div>
+              ) : null}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeRenameDialog}
+                className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={submitRenameDialog}
+                className="inline-flex items-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-white transition hover:bg-sky-300"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
