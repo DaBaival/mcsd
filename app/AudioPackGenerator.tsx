@@ -38,6 +38,10 @@ type PackPlatform = "java" | "bedrock";
 
 type Step = 1 | 2 | 3 | 4 | 5;
 
+function noop() {}
+
+function noopGoToStep() {}
+
 type FileItem = {
   id: string;
   originalFile: File;
@@ -74,11 +78,38 @@ type PackMeta = {
   modifyVanilla: boolean;
 };
 
+type GuideAnchorKey =
+  | "step1Icon"
+  | "step1Name"
+  | "step1Key"
+  | "step1Platform"
+  | "step1JavaPackFormat"
+  | "step1ModifyVanilla"
+  | "step1Desc"
+  | "step1Next"
+  | "step2AddFiles"
+  | "step2DropZone"
+  | "step2StartProcessing"
+  | "step3ProgressCard"
+  | "step3LogCard"
+  | "step4Download"
+  | "step4Next"
+  | "step5DownloadTxt";
+
+type GuideItem = {
+  title: string;
+  desc: string;
+  anchorKey?: GuideAnchorKey;
+  primaryAction?: () => void;
+  primaryLabel?: string;
+};
+
 const DEFAULT_KEY = "mcsd";
 const NAME_MAX_LENGTH = 10;
 const JAVA_DESC_MAX_LENGTH = 20;
 const BEDROCK_DESC_MAX_LENGTH = 40;
 const AUTO_DESC_SUFFIX = "By mcsd";
+const GUIDE_ACK_KEY = "mcsd_immersive_guide_ack_v1";
 
 function getDescLimit(platform: PackPlatform) {
   return platform === "bedrock" ? BEDROCK_DESC_MAX_LENGTH : JAVA_DESC_MAX_LENGTH;
@@ -87,6 +118,104 @@ function getDescLimit(platform: PackPlatform) {
 function buildPackDescription(desc: string) {
   const trimmed = desc.trim();
   return trimmed ? `${trimmed} ${AUTO_DESC_SUFFIX}` : AUTO_DESC_SUFFIX;
+}
+
+function buildImmersiveGuideItems({
+  step,
+  platform,
+  processingError,
+  goToStep,
+  startProcessing,
+  downloadPack,
+}: {
+  step: Step;
+  platform: PackPlatform;
+  processingError: string | null;
+  goToStep: (target: Step) => void;
+  startProcessing: () => void;
+  downloadPack: () => void;
+}): GuideItem[] {
+  const step1: GuideItem[] = [
+    {
+      title: "上传封面（可选）",
+      desc: "建议上传 256×256 PNG；会用于资源包图标显示。",
+      anchorKey: "step1Icon",
+    },
+    { title: "填写音频包名称", desc: "必填，用于资源包显示名称。", anchorKey: "step1Name" },
+    { title: "确认主 Key", desc: "必填，用于 assets/.../sounds/<主Key>/ 的文件夹名。", anchorKey: "step1Key" },
+    { title: "选择游戏版本", desc: "Java / 基岩版会影响打包格式与命令生成。", anchorKey: "step1Platform" },
+    ...(platform === "java"
+      ? [
+          {
+            title: "选择资源包版本",
+            desc: "仅 Java 版需要选择；选错不会影响使用，但新版本里可能出现“不兼容”提示。",
+            anchorKey: "step1JavaPackFormat",
+          } as const,
+        ]
+      : []),
+    {
+      title: "是否修改原版音频",
+      desc: "开启后可替换原版事件；导入音频时需要为每个文件选择事件。",
+      anchorKey: "step1ModifyVanilla",
+    },
+    { title: "填写简介（可选）", desc: "会自动追加 By mcsd。", anchorKey: "step1Desc" },
+    {
+      title: "进入下一步",
+      desc: "完成后点击“下一步”开始导入音频。",
+      anchorKey: "step1Next",
+      primaryLabel: "前往下一步",
+      primaryAction: () => goToStep(2),
+    },
+  ];
+
+  const step2: GuideItem[] = [
+    { title: "添加音频文件", desc: "点击“添加文件”，或直接把文件拖入页面。", anchorKey: "step2AddFiles" },
+    { title: "拖拽区与重命名", desc: "可在列表里重命名；移动端会弹窗编辑。", anchorKey: "step2DropZone" },
+    {
+      title: "开始处理",
+      desc: "确认文件已添加后，点击“开始处理”进行格式检查与转换。",
+      anchorKey: "step2StartProcessing",
+      primaryLabel: "开始处理",
+      primaryAction: startProcessing,
+    },
+  ];
+
+  const step3: GuideItem[] = [
+    { title: "查看转换进度", desc: "这里会显示总进度与当前处理的文件。", anchorKey: "step3ProgressCard" },
+    {
+      title: "查看转换日志",
+      desc: processingError ? "出现错误时可根据日志定位原因，并点击“返回修改”。" : "可查看最近的转换记录与错误信息。",
+      anchorKey: "step3LogCard",
+    },
+  ];
+
+  const step4: GuideItem[] = [
+    {
+      title: "下载资源包",
+      desc: "点击下载 zip / mcpack 文件。",
+      anchorKey: "step4Download",
+      primaryLabel: "下载",
+      primaryAction: downloadPack,
+    },
+    {
+      title: "生成命令",
+      desc: "继续进入下一步，生成 /playsound 命令。",
+      anchorKey: "step4Next",
+      primaryLabel: "前往生成命令",
+      primaryAction: () => goToStep(5),
+    },
+  ];
+
+  const step5: GuideItem[] = [
+    { title: "下载命令 TXT", desc: "可导出命令列表，便于复制到游戏或备份。", anchorKey: "step5DownloadTxt" },
+    { title: "复制命令", desc: "每条命令右侧可一键复制。", anchorKey: undefined },
+  ];
+
+  if (step === 1) return step1;
+  if (step === 2) return step2;
+  if (step === 3) return step3;
+  if (step === 4) return step4;
+  return step5;
 }
 
 function clampDescForPlatform(desc: string, platform: PackPlatform) {
@@ -957,6 +1086,113 @@ function IconPreview({
   );
 }
 
+function ImmersiveGuideOverlay({
+  step,
+  stepTitle,
+  itemIndex,
+  itemTotal,
+  item,
+  anchorRect,
+  onPrev,
+  onNext,
+  onSkip,
+}: {
+  step: Step;
+  stepTitle: string;
+  itemIndex: number;
+  itemTotal: number;
+  item: GuideItem;
+  anchorRect: { top: number; left: number; width: number; height: number } | null;
+  onPrev: () => void;
+  onNext: () => void;
+  onSkip: () => void;
+}) {
+  const padding = 12;
+  const viewportW = typeof window === "undefined" ? 0 : window.innerWidth;
+  const viewportH = typeof window === "undefined" ? 0 : window.innerHeight;
+
+  const tooltipW = Math.min(360, Math.max(280, viewportW - padding * 2));
+  const tooltipHalfW = tooltipW / 2;
+
+  const anchorCenterX = anchorRect ? anchorRect.left + anchorRect.width / 2 : viewportW / 2;
+  const anchorBottomY = anchorRect ? anchorRect.top + anchorRect.height : viewportH / 2;
+  const anchorTopY = anchorRect ? anchorRect.top : viewportH / 2;
+
+  const preferTop = anchorRect ? anchorBottomY + 12 + 220 > viewportH : false;
+  const tooltipTop = preferTop ? Math.max(padding, anchorTopY - 12 - 220) : Math.min(viewportH - 220 - padding, anchorBottomY + 12);
+  const tooltipLeft = Math.min(
+    Math.max(padding, anchorCenterX - tooltipHalfW),
+    Math.max(padding, viewportW - tooltipW - padding)
+  );
+
+  const highlightStyle = anchorRect
+    ? ({
+        top: anchorRect.top,
+        left: anchorRect.left,
+        width: anchorRect.width,
+        height: anchorRect.height,
+        boxShadow: "0 0 0 9999px rgba(2, 6, 23, 0.55)",
+      } as const)
+    : null;
+
+  return (
+    <div className="fixed inset-0 z-20 pointer-events-none">
+      {anchorRect ? (
+        <div className="fixed rounded-2xl ring-2 ring-sky-300/80" style={highlightStyle ?? undefined} />
+      ) : (
+        <div className="fixed inset-0 bg-slate-950/55" />
+      )}
+
+      <div
+        className="fixed pointer-events-auto"
+        style={{
+          top: tooltipTop,
+          left: tooltipLeft,
+          width: tooltipW,
+        }}
+      >
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-xl">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-xs font-extrabold text-slate-400">
+                第 {step} 步 · {stepTitle} · {itemIndex + 1}/{itemTotal}
+              </div>
+              <div className="mt-1 text-base font-extrabold text-slate-800">{item.title}</div>
+              <div className="mt-1 text-sm text-slate-600">{item.desc}</div>
+            </div>
+            <button
+              type="button"
+              onClick={onSkip}
+              className="inline-flex shrink-0 items-center rounded-xl px-3 py-2 text-xs font-bold text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
+            >
+              跳过
+            </button>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={onPrev}
+              disabled={itemIndex <= 0}
+              className="inline-flex items-center rounded-xl px-3 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300"
+            >
+              上一个
+            </button>
+
+            <button
+              type="button"
+              onClick={onNext}
+              className="inline-flex items-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:bg-sky-300"
+            >
+              {itemIndex + 1 >= itemTotal ? item.primaryLabel ?? (item.primaryAction ? "继续" : "结束引导") : "下一个"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TopBar() {
   return <div className="h-2 bg-linear-to-r from-sky-400 via-sky-300 to-sky-500" />;
 }
@@ -1177,6 +1413,36 @@ export default function AudioPackGenerator() {
   const logsEndRef = useRef<HTMLDivElement | null>(null);
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideIndex, setGuideIndex] = useState(0);
+  const [guideAnchorRect, setGuideAnchorRect] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const guideAnchorsRef = useRef<Record<GuideAnchorKey, HTMLElement | null>>({
+    step1Icon: null,
+    step1Name: null,
+    step1Key: null,
+    step1Platform: null,
+    step1JavaPackFormat: null,
+    step1ModifyVanilla: null,
+    step1Desc: null,
+    step1Next: null,
+    step2AddFiles: null,
+    step2DropZone: null,
+    step2StartProcessing: null,
+    step3ProgressCard: null,
+    step3LogCard: null,
+    step4Download: null,
+    step4Next: null,
+    step5DownloadTxt: null,
+  });
+  const guideAutoFillRef = useRef<{
+    original: Pick<PackMeta, "name" | "key" | "desc">;
+    sample: Pick<PackMeta, "name" | "key" | "desc">;
+  } | null>(null);
 
   const nameCount = meta.name.length;
   const descLimit = getDescLimit(meta.platform);
@@ -1399,6 +1665,128 @@ export default function AudioPackGenerator() {
   }, [overlayActive]);
 
   useEffect(() => {
+    if (!ffmpegLoaded) return;
+    let acked = false;
+    try {
+      acked = localStorage.getItem(GUIDE_ACK_KEY) === "1";
+    } catch {
+      acked = false;
+    }
+    if (acked) return;
+    setGuideOpen(true);
+    setGuideIndex(0);
+  }, [ffmpegLoaded]);
+
+  useEffect(() => {
+    if (guideOpen) {
+      if (guideAutoFillRef.current) return;
+      const sample: Pick<PackMeta, "name" | "key" | "desc"> = {
+        name: "示例音频包",
+        key: "demo",
+        desc: "示例简介",
+      };
+      setMeta((prev) => {
+        guideAutoFillRef.current = {
+          original: { name: prev.name, key: prev.key, desc: prev.desc },
+          sample,
+        };
+        return {
+          ...prev,
+          name: prev.name.trim() ? prev.name : sample.name,
+          key: prev.key === DEFAULT_KEY ? sample.key : prev.key,
+          desc: prev.desc.trim() ? prev.desc : sample.desc,
+        };
+      });
+      return;
+    }
+
+    const info = guideAutoFillRef.current;
+    guideAutoFillRef.current = null;
+    if (!info) return;
+
+    setMeta((prev) => {
+      const next = { ...prev };
+      if (!info.original.name.trim() && prev.name === info.sample.name) next.name = info.original.name;
+      if (info.original.key === DEFAULT_KEY && prev.key === info.sample.key) next.key = info.original.key;
+      if (!info.original.desc.trim() && prev.desc === info.sample.desc) next.desc = info.original.desc;
+      return next;
+    });
+  }, [guideOpen]);
+
+  useEffect(() => {
+    if (!guideOpen) return;
+    setGuideIndex(0);
+  }, [guideOpen, step]);
+
+  useEffect(() => {
+    if (!guideOpen) {
+      setGuideAnchorRect(null);
+      return;
+    }
+    const items = buildImmersiveGuideItems({
+      step,
+      platform: meta.platform,
+      processingError: processing.error,
+      goToStep: noopGoToStep,
+      startProcessing: noop,
+      downloadPack: noop,
+    });
+    const maxIndex = Math.max(0, items.length - 1);
+    if (guideIndex > maxIndex) {
+      setGuideIndex(maxIndex);
+      return;
+    }
+
+    const item = items[guideIndex] ?? null;
+    const anchorEl = item?.anchorKey ? guideAnchorsRef.current[item.anchorKey] : null;
+    if (!anchorEl) {
+      setGuideAnchorRect(null);
+      return;
+    }
+
+    let raf = 0;
+    const update = () => {
+      const rect = anchorEl.getBoundingClientRect();
+      const expand = 10;
+      setGuideAnchorRect({
+        top: Math.max(0, rect.top - expand),
+        left: Math.max(0, rect.left - expand),
+        width: rect.width + expand * 2,
+        height: rect.height + expand * 2,
+      });
+    };
+    const schedule = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(update);
+    };
+
+    try {
+      anchorEl.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    } catch {
+      void 0;
+    }
+
+    schedule();
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, true);
+
+    let ro: ResizeObserver | null = null;
+    try {
+      ro = new ResizeObserver(schedule);
+      ro.observe(anchorEl);
+    } catch {
+      ro = null;
+    }
+
+    return () => {
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+      if (raf) cancelAnimationFrame(raf);
+      ro?.disconnect();
+    };
+  }, [guideIndex, guideOpen, meta.platform, processing.error, step]);
+
+  useEffect(() => {
     if (step < 2) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
@@ -1431,6 +1819,18 @@ export default function AudioPackGenerator() {
       error: null,
     });
     setAudioProgress({});
+  };
+
+  const finishGuide = () => {
+    try {
+      localStorage.setItem(GUIDE_ACK_KEY, "1");
+    } catch {
+      void 0;
+    }
+    setGuideOpen(false);
+    setGuideIndex(0);
+    setGuideAnchorRect(null);
+    resetAll();
   };
 
   const onPickIcon = async (file: File | null) => {
@@ -1549,17 +1949,23 @@ export default function AudioPackGenerator() {
   };
 
   const goToStep = (target: Step) => {
-    if (target === 2) {
-      if (!meta.name.trim()) {
-        alert("请输入音频包名称");
-        return;
-      }
+    if (guideOpen) {
+      setGuideIndex(0);
+      setGuideAnchorRect(null);
     }
+    if (!guideOpen) {
+      if (target === 2) {
+        if (!meta.name.trim()) {
+          alert("请输入音频包名称");
+          return;
+        }
+      }
 
-    if (target === 3 && meta.modifyVanilla) {
-      if (files.length === 0) {
-        alert("请先添加音频文件");
-        return;
+      if (target === 3 && meta.modifyVanilla) {
+        if (files.length === 0) {
+          alert("请先添加音频文件");
+          return;
+        }
       }
     }
 
@@ -1887,6 +2293,55 @@ export default function AudioPackGenerator() {
           maxRetries={3}
         />
       ) : null}
+      {(() => {
+        if (!guideOpen) return null;
+        const guideItems = buildImmersiveGuideItems({
+          step,
+          platform: meta.platform,
+          processingError: processing.error,
+          goToStep,
+          startProcessing: () => void startProcessing(),
+          downloadPack: () => void downloadPack(),
+        });
+        const itemTotal = guideItems.length;
+        if (itemTotal === 0) return null;
+        const itemIndex = Math.min(Math.max(0, guideIndex), itemTotal - 1);
+        const item = guideItems[itemIndex];
+        const stepTitle =
+          (
+            {
+              1: "基本信息",
+              2: "导入音频",
+              3: "格式转换",
+              4: "打包下载",
+              5: "生成命令",
+            } as const
+          )[step] ?? "引导";
+
+        return (
+          <ImmersiveGuideOverlay
+            step={step}
+            stepTitle={stepTitle}
+            itemIndex={itemIndex}
+            itemTotal={itemTotal}
+            item={item}
+            anchorRect={guideAnchorRect}
+            onPrev={() => setGuideIndex((prev) => Math.max(0, prev - 1))}
+            onNext={() => {
+              if (itemIndex + 1 < itemTotal) {
+                setGuideIndex((prev) => Math.min(itemTotal - 1, prev + 1));
+                return;
+              }
+              if (item.primaryAction) {
+                item.primaryAction();
+                return;
+              }
+              finishGuide();
+            }}
+            onSkip={finishGuide}
+          />
+        );
+      })()}
       {disclaimerOpen ? <DisclaimerOverlay onClose={closeDisclaimer} /> : null}
       <div
         ref={contentRef}
@@ -1925,10 +2380,21 @@ export default function AudioPackGenerator() {
                 </div>
 
                 <div className="space-y-6">
-                  <IconPreview iconPreviewUrl={meta.iconPreviewUrl} onPick={onPickIcon} />
+                  <div
+                    ref={(el) => {
+                      guideAnchorsRef.current.step1Icon = el;
+                    }}
+                  >
+                    <IconPreview iconPreviewUrl={meta.iconPreviewUrl} onPick={onPickIcon} />
+                  </div>
 
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div className="col-span-1 sm:col-span-2">
+                    <div
+                      ref={(el) => {
+                        guideAnchorsRef.current.step1Name = el;
+                      }}
+                      className="col-span-1 sm:col-span-2"
+                    >
                       <label className="mb-2 block text-sm font-bold text-slate-600">
                         音频包名称 <span className="text-red-400">*</span>
                       </label>
@@ -1949,7 +2415,12 @@ export default function AudioPackGenerator() {
                       </div>
                     </div>
 
-                    <div className="col-span-1 sm:col-span-2">
+                    <div
+                      ref={(el) => {
+                        guideAnchorsRef.current.step1Key = el;
+                      }}
+                      className="col-span-1 sm:col-span-2"
+                    >
                       <label className="mb-2 block text-sm font-bold text-slate-600">
                         主 Key (文件夹名) <span className="text-red-400">*</span>
                       </label>
@@ -1976,7 +2447,11 @@ export default function AudioPackGenerator() {
                       </p>
                     </div>
 
-                    <div>
+                    <div
+                      ref={(el) => {
+                        guideAnchorsRef.current.step1Platform = el;
+                      }}
+                    >
                       <label className="mb-2 block text-sm font-bold text-slate-600">
                         游戏版本 <span className="text-red-400">*</span>
                       </label>
@@ -1998,7 +2473,11 @@ export default function AudioPackGenerator() {
                       </div>
                     </div>
 
-                    <div>
+                    <div
+                      ref={(el) => {
+                        guideAnchorsRef.current.step1JavaPackFormat = el;
+                      }}
+                    >
                       {meta.platform === "java" ? (
                         <>
                           <label className="mb-2 block text-sm font-bold text-slate-600">
@@ -2019,13 +2498,18 @@ export default function AudioPackGenerator() {
                             <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                           </div>
                           <p className="ml-1 mt-1.5 text-xs text-slate-400">
-                            不会影响新版本的使用；但如果版本不匹配，游戏内可能会显示为“旧版资源包”，并出现兼容性问题。
+                            选择版本不对不会影响使用，但如果版本不匹配，在新版本游戏里会有[不兼容]的提示
                           </p>
                         </>
                       ) : null}
                     </div>
 
-                    <div className="col-span-1 sm:col-span-2">
+                    <div
+                      ref={(el) => {
+                        guideAnchorsRef.current.step1ModifyVanilla = el;
+                      }}
+                      className="col-span-1 sm:col-span-2"
+                    >
                       <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-4">
                         <div>
                           <div className="text-sm font-bold text-slate-700">修改原版音频?</div>
@@ -2051,7 +2535,12 @@ export default function AudioPackGenerator() {
                       </div>
                     </div>
 
-                    <div className="col-span-1 sm:col-span-2">
+                    <div
+                      ref={(el) => {
+                        guideAnchorsRef.current.step1Desc = el;
+                      }}
+                      className="col-span-1 sm:col-span-2"
+                    >
                       <label className="mb-2 block text-sm font-bold text-slate-600">简介 (可选)</label>
                       <div className="relative">
                         <input
@@ -2073,6 +2562,9 @@ export default function AudioPackGenerator() {
 
                   <div className="flex justify-end pt-4">
                     <button
+                      ref={(el) => {
+                        guideAnchorsRef.current.step1Next = el;
+                      }}
                       type="button"
                       onClick={() => goToStep(2)}
                       className="inline-flex w-full items-center justify-center rounded-xl bg-sky-400 px-6 py-3 font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:-translate-y-0.5 hover:bg-sky-300 md:w-auto"
@@ -2086,7 +2578,7 @@ export default function AudioPackGenerator() {
 
             {step === 2 ? (
               <div className="flex h-full flex-col">
-                <div className="mb-6 flex shrink-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="mb-6 flex shrink-0 flex-row gap-4 sm:flex-row sm:items-center sm:justify-between items-center justify-center">
                   <div>
                     <h2 className="text-2xl font-extrabold text-slate-800">添加音频文件</h2>
                     <p className="text-sm text-slate-500">
@@ -2095,7 +2587,12 @@ export default function AudioPackGenerator() {
                   </div>
 
                   <div>
-                    <label className="inline-flex cursor-pointer items-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:bg-sky-300">
+                    <label
+                      ref={(el) => {
+                        guideAnchorsRef.current.step2AddFiles = el;
+                      }}
+                      className="inline-flex cursor-pointer items-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:bg-sky-300"
+                    >
                       <Plus className="mr-2 h-4 w-4" />
                       添加文件
                       <input
@@ -2109,17 +2606,25 @@ export default function AudioPackGenerator() {
                   </div>
                 </div>
 
-                <FileDropZone
-                  modifyVanilla={meta.modifyVanilla}
-                  files={files}
-                  onAddFiles={onAddFiles}
-                  onRemoveFile={onRemoveFile}
-                  onRenameFile={onRenameFile}
-                  onUpdateVanillaEvent={onUpdateVanillaEvent}
-                  vanillaEventOptions={vanillaEventOptions}
-                  vanillaEventLoading={vanillaEventLoading}
-                  vanillaEventLoadFailed={vanillaEventLoadFailed}
-                />
+                <div
+                  ref={(el) => {
+                    guideAnchorsRef.current.step2DropZone = el;
+                  }}
+                  className="flex-1 min-h-0"
+                >
+                  <FileDropZone
+                    guideDemo={guideOpen}
+                    modifyVanilla={meta.modifyVanilla}
+                    files={files}
+                    onAddFiles={onAddFiles}
+                    onRemoveFile={onRemoveFile}
+                    onRenameFile={onRenameFile}
+                    onUpdateVanillaEvent={onUpdateVanillaEvent}
+                    vanillaEventOptions={vanillaEventOptions}
+                    vanillaEventLoading={vanillaEventLoading}
+                    vanillaEventLoadFailed={vanillaEventLoadFailed}
+                  />
+                </div>
 
                 <div className="mt-4 flex shrink-0 flex-col gap-4 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-sm font-bold text-slate-500">
@@ -2134,8 +2639,11 @@ export default function AudioPackGenerator() {
                       上一步
                     </button>
                     <button
+                      ref={(el) => {
+                        guideAnchorsRef.current.step2StartProcessing = el;
+                      }}
                       type="button"
-                      disabled={!canStartProcess}
+                      disabled={!canStartProcess && !guideOpen}
                       onClick={() => void startProcessing()}
                       className={[
                         "inline-flex w-full items-center justify-center rounded-xl bg-sky-400 px-6 py-3 font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:-translate-y-0.5 hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:hover:translate-y-0 sm:w-auto",
@@ -2150,7 +2658,12 @@ export default function AudioPackGenerator() {
 
             {step === 3 ? (
               <div className="mx-auto flex h-full min-h-0 max-w-5xl flex-col gap-4 overflow-hidden">
-                <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div
+                  ref={(el) => {
+                    guideAnchorsRef.current.step3ProgressCard = el;
+                  }}
+                  className="shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white"
+                >
                   <div className="border-b border-slate-100 px-3 py-3 sm:px-4">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                       <div>
@@ -2251,7 +2764,12 @@ export default function AudioPackGenerator() {
                   </div>
                 </div>
 
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div
+                  ref={(el) => {
+                    guideAnchorsRef.current.step3LogCard = el;
+                  }}
+                  className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white"
+                >
                   <div className="shrink-0 border-b border-slate-100 px-3 py-3 sm:px-4">
                     <div className="text-sm font-extrabold text-slate-800">转换日志</div>
                     <div className="text-[11px] font-bold text-slate-400 sm:text-xs">仅显示最近 300 条</div>
@@ -2308,6 +2826,9 @@ export default function AudioPackGenerator() {
                 </div>
 
                 <button
+                  ref={(el) => {
+                    guideAnchorsRef.current.step4Download = el;
+                  }}
                   type="button"
                   onClick={() => void downloadPack()}
                   className="inline-flex w-full max-w-sm items-center justify-center rounded-xl bg-sky-400 px-6 py-3 text-base font-bold text-white shadow-xl shadow-sky-200 transition hover:-translate-y-0.5 hover:bg-sky-300 sm:w-auto sm:px-8 sm:py-4 sm:text-lg"
@@ -2317,6 +2838,9 @@ export default function AudioPackGenerator() {
                 </button>
 
                 <button
+                  ref={(el) => {
+                    guideAnchorsRef.current.step4Next = el;
+                  }}
                   type="button"
                   onClick={() => goToStep(5)}
                   className="mt-4 inline-flex items-center rounded-xl bg-slate-900 px-6 py-3 text-sm font-bold text-white transition hover:bg-slate-800"
@@ -2347,6 +2871,9 @@ export default function AudioPackGenerator() {
                       </p>
                     </div>
                     <button
+                      ref={(el) => {
+                        guideAnchorsRef.current.step5DownloadTxt = el;
+                      }}
                       type="button"
                       onClick={downloadCommandsTxt}
                       className="inline-flex items-center rounded-xl bg-slate-900 px-2.5 py-2 text-[11px] font-bold text-white transition hover:bg-slate-800 sm:px-3 sm:text-xs md:px-4 md:text-sm"
@@ -2478,6 +3005,7 @@ export default function AudioPackGenerator() {
 }
 
 function FileDropZone({
+  guideDemo,
   modifyVanilla,
   files,
   onAddFiles,
@@ -2488,6 +3016,7 @@ function FileDropZone({
   vanillaEventLoading,
   vanillaEventLoadFailed,
 }: {
+  guideDemo: boolean;
   modifyVanilla: boolean;
   files: FileItem[];
   onAddFiles: (list: FileList | null) => void | Promise<void>;
@@ -2584,7 +3113,7 @@ function FileDropZone({
   return (
     <div
       className={[
-        "relative flex-1 overflow-y-auto rounded-2xl border-4 border-dashed bg-slate-50 p-4 transition",
+        "relative h-full min-h-0 overflow-y-auto rounded-2xl border-4 border-dashed bg-slate-50 p-4 transition",
         dragOver ? "border-sky-400 bg-sky-50" : "border-slate-200",
       ].join(" ")}
       onDragOver={(e) => {
@@ -2599,12 +3128,55 @@ function FileDropZone({
       }}
     >
       {files.length === 0 ? (
-        <div className="pointer-events-none flex h-full flex-col items-center justify-center text-center">
-          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-sky-50 text-sky-500">
-            <UploadCloud className="h-8 w-8" />
+        <div className="flex h-full flex-col items-center justify-center text-center">
+          <div className="pointer-events-none flex flex-col items-center">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-sky-50 text-sky-500">
+              <UploadCloud className="h-8 w-8" />
+            </div>
+            <h3 className="font-bold text-slate-700">拖放音频文件到这里</h3>
+            <p className="mt-1 text-sm text-slate-400">支持 MP3, WAV, OGG 等音频格式</p>
           </div>
-          <h3 className="font-bold text-slate-700">拖放音频文件到这里</h3>
-          <p className="mt-1 text-sm text-slate-400">支持 MP3, WAV, OGG 等音频格式</p>
+
+          {guideDemo ? (
+            <div className="pointer-events-none mt-8 w-full max-w-2xl text-left">
+              <div className="mb-2 text-xs font-extrabold text-slate-400">示例（引导模式）</div>
+              <div className={["grid gap-3", modifyVanilla ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2"].join(" ")}>
+                <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 truncate text-xs text-slate-400" title="demo_song.mp3">
+                      demo_song.mp3
+                    </div>
+                    <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                      <ArrowRight className="h-3 w-3 text-sky-500" />
+                      <span className="rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600">song1</span>
+                    </div>
+                    {modifyVanilla ? (
+                      <div className="mt-2 text-[11px] font-bold text-slate-400">
+                        原版事件：minecraft:entity.player.hurt
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 truncate text-xs text-slate-400" title="bgm.ogg">
+                      bgm.ogg
+                    </div>
+                    <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                      <ArrowRight className="h-3 w-3 text-sky-500" />
+                      <span className="rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600">bgm1</span>
+                    </div>
+                    {modifyVanilla ? (
+                      <div className="mt-2 text-[11px] font-bold text-slate-400">
+                        原版事件：minecraft:music.overworld
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : (
         <div
@@ -2628,6 +3200,55 @@ function FileDropZone({
                     <div className="mb-1 text-xs text-slate-400">已上传文件</div>
                     <div className="truncate text-sm font-bold text-slate-700" title={f.originalName}>
                       {f.originalName}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-sm font-bold text-slate-700">
+                      <span className="text-xs font-bold text-slate-400">重命名</span>
+                      {editingId === f.id ? (
+                        <div className="min-w-0">
+                          <input
+                            ref={inlineInputRef}
+                            value={editingValue}
+                            onChange={(e) => {
+                              setEditingError(null);
+                              setEditingValue(sanitizeSoundName(e.target.value));
+                            }}
+                            onBlur={() => commitInlineEdit(f.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                commitInlineEdit(f.id);
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelInlineEdit();
+                              }
+                            }}
+                            className="w-28 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 outline-none ring-1 ring-sky-200 transition focus:bg-white focus:ring-2 focus:ring-sky-400"
+                          />
+                          {editingError ? (
+                            <div className="mt-1 text-[11px] font-bold text-red-500">{editingError}</div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openRenameDialog(f)}
+                            className="inline-flex items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 transition hover:bg-sky-100 md:hidden"
+                          >
+                            {f.newName}
+                            <Edit2 className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => beginInlineEdit(f)}
+                            className="hidden items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 transition hover:bg-sky-100 md:inline-flex"
+                          >
+                            {f.newName}
+                            <Edit2 className="h-3 w-3" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
 
