@@ -47,9 +47,14 @@ export class FFmpegService {
     return () => this.statusListeners.delete(cb);
   }
 
-  public onProgress(cb: (progress: number) => void): () => void {
+  public onProgress(
+    cb: (progress: number) => void,
+    options?: {
+      immediate?: boolean;
+    }
+  ): () => void {
     this.progressListeners.add(cb);
-    cb(this.progress);
+    if (options?.immediate !== false) cb(this.progress);
     return () => this.progressListeners.delete(cb);
   }
 

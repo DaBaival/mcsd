@@ -55,6 +55,13 @@ type ConvertLogItem = {
   message: string;
 };
 
+type AudioProgressStage = "queued" | "checking" | "loading" | "converting" | "skipped" | "done" | "error";
+
+type AudioProgressItem = {
+  stage: AudioProgressStage;
+  percent: number;
+};
+
 type PackMeta = {
   name: string;
   key: string;
@@ -256,6 +263,146 @@ function readFileAsArrayBuffer(file: File) {
   return file.arrayBuffer();
 }
 
+async function readFileHead(file: File, maxBytes: number): Promise<Uint8Array> {
+  const size = Math.min(file.size, maxBytes);
+  const buf = await file.slice(0, size).arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+function bytesToAscii(bytes: Uint8Array, start: number, len: number) {
+  let out = "";
+  for (let i = 0; i < len; i += 1) {
+    out += String.fromCharCode(bytes[start + i] ?? 0);
+  }
+  return out;
+}
+
+function findAscii(bytes: Uint8Array, needle: string) {
+  if (!needle.length) return -1;
+  const n0 = needle.charCodeAt(0);
+  for (let i = 0; i <= bytes.length - needle.length; i += 1) {
+    if ((bytes[i] ?? 0) !== n0) continue;
+    let ok = true;
+    for (let j = 1; j < needle.length; j += 1) {
+      if ((bytes[i + j] ?? 0) !== needle.charCodeAt(j)) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i;
+  }
+  return -1;
+}
+
+function sliceBytes(bytes: Uint8Array, start: number, length: number) {
+  return bytes.subarray(start, Math.min(bytes.length, start + length));
+}
+
+function concatBytes(chunks: Uint8Array[]) {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out;
+}
+
+function readOggFirstPacket(bytes: Uint8Array): Uint8Array | null {
+  const oggPos = findAscii(bytes, "OggS");
+  if (oggPos < 0) return null;
+
+  let offset = oggPos;
+  const packetChunks: Uint8Array[] = [];
+
+  while (offset + 27 <= bytes.length) {
+    if (bytesToAscii(bytes, offset, 4) !== "OggS") {
+      const next = findAscii(sliceBytes(bytes, offset + 1, bytes.length - (offset + 1)), "OggS");
+      if (next < 0) return null;
+      offset = offset + 1 + next;
+      continue;
+    }
+
+    const version = bytes[offset + 4] ?? 0xff;
+    if (version !== 0) return null;
+
+    const pageSegments = bytes[offset + 26] ?? 0;
+    const segmentTableStart = offset + 27;
+    const dataStart = segmentTableStart + pageSegments;
+    if (dataStart > bytes.length) return null;
+
+    const segmentTable = bytes.subarray(segmentTableStart, dataStart);
+    let dataLen = 0;
+    for (let i = 0; i < segmentTable.length; i += 1) dataLen += segmentTable[i] ?? 0;
+    const pageEnd = dataStart + dataLen;
+    if (pageEnd > bytes.length) return null;
+
+    let cursor = dataStart;
+    for (let i = 0; i < segmentTable.length; i += 1) {
+      const segLen = segmentTable[i] ?? 0;
+      if (segLen > 0) {
+        packetChunks.push(bytes.subarray(cursor, cursor + segLen));
+      }
+      cursor += segLen;
+      if (segLen < 255) {
+        return concatBytes(packetChunks);
+      }
+    }
+
+    offset = pageEnd;
+  }
+
+  return null;
+}
+
+function getOggVorbisIdHeaderInfo(bytes: Uint8Array): { channels: number; sampleRate: number } | null {
+  const firstPacket = readOggFirstPacket(bytes);
+  if (!firstPacket) return null;
+
+  if (bytesToAscii(firstPacket, 0, 8) === "OpusHead") return null;
+  if (firstPacket.length < 30) return null;
+  if ((firstPacket[0] ?? 0) !== 0x01) return null;
+  if (bytesToAscii(firstPacket, 1, 6) !== "vorbis") return null;
+
+  const dv = new DataView(firstPacket.buffer, firstPacket.byteOffset, firstPacket.byteLength);
+  const version = dv.getUint32(7, true);
+  if (version !== 0) return null;
+
+  const channels = firstPacket[11] ?? 0;
+  const sampleRate = dv.getUint32(12, true);
+  const framingFlag = firstPacket[29] ?? 0;
+  if (framingFlag !== 1) return null;
+  if (!channels || !sampleRate) return null;
+  return { channels, sampleRate };
+}
+
+async function checkMinecraftOggReady(file: File): Promise<{
+  ready: boolean;
+  channels: number | null;
+  sampleRate: number | null;
+}> {
+  const head = await readFileHead(file, 256 * 1024);
+  const vorbis = getOggVorbisIdHeaderInfo(head);
+  if (!vorbis) {
+    return { ready: false, channels: null, sampleRate: null };
+  }
+
+  const channelsOk = vorbis.channels === 2;
+  const sampleRateOk = vorbis.sampleRate === 44100;
+  return { ready: channelsOk && sampleRateOk, channels: vorbis.channels, sampleRate: vorbis.sampleRate };
+}
+
+function isMaybeOggFile(input: Pick<FileItem, "originalFile" | "originalName">) {
+  return input.originalFile.type === "audio/ogg" || input.originalName.toLowerCase().endsWith(".ogg");
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 function loadHtmlImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new window.Image();
@@ -403,6 +550,44 @@ function StepIndicator({
         <div className="text-xs text-slate-400">{desc}</div>
       </div>
     </div>
+  );
+}
+
+function CircleProgress({
+  percent,
+  size = 28,
+  strokeWidth = 3,
+}: {
+  percent: number;
+  size?: number;
+  strokeWidth?: number;
+}) {
+  const clamped = Math.min(100, Math.max(0, percent));
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - clamped / 100);
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        strokeWidth={strokeWidth}
+        className="fill-none stroke-slate-200"
+      />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        strokeWidth={strokeWidth}
+        strokeDasharray={circumference}
+        strokeDashoffset={offset}
+        strokeLinecap="round"
+        className="fill-none stroke-sky-400 transition-[stroke-dashoffset] duration-300"
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      />
+    </svg>
   );
 }
 
@@ -979,6 +1164,7 @@ export default function AudioPackGenerator() {
     error: null,
   });
   const [convertLogs, setConvertLogs] = useState<ConvertLogItem[]>([]);
+  const [audioProgress, setAudioProgress] = useState<Record<string, AudioProgressItem>>({});
   const logsEndRef = useRef<HTMLDivElement | null>(null);
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
@@ -991,6 +1177,12 @@ export default function AudioPackGenerator() {
 
   const fileCount = files.length;
   const canStartProcess = fileCount > 0;
+  const finishedAudioCount = files.reduce((sum, f) => {
+    const stage = audioProgress[f.id]?.stage;
+    if (stage === "done" || stage === "skipped") return sum + 1;
+    if (!stage && f.status === "done") return sum + 1;
+    return sum;
+  }, 0);
 
   const pushConvertLog = (message: string, level: ConvertLogItem["level"] = "info") => {
     setConvertLogs((prev) => {
@@ -1225,6 +1417,7 @@ export default function AudioPackGenerator() {
       percent: 0,
       error: null,
     });
+    setAudioProgress({});
   };
 
   const onPickIcon = async (file: File | null) => {
@@ -1314,13 +1507,103 @@ export default function AudioPackGenerator() {
     if (total === 0) return;
 
     setConvertLogs([]);
+    setAudioProgress(
+      Object.fromEntries(files.map((f) => [f.id, { stage: "queued" as const, percent: 0 }]))
+    );
+    setProcessing({
+      title: "准备开始处理...",
+      desc: "即将开始检查与转换音频格式。",
+      currentFile: "Starting...",
+      percent: 0,
+      error: null,
+    });
     pushConvertLog(`开始处理：共 ${total} 个文件`);
+
+    const results: Record<string, Blob> = {};
+    const oggCandidates = files.filter(isMaybeOggFile);
+    const oggReadyMap = new Map<string, { channels: number; sampleRate: number }>();
+    if (oggCandidates.length > 0) {
+      setProcessing({
+        title: "正在检查 OGG 格式...",
+        desc: "符合 Minecraft 规格的 OGG 将直接复用，无需转码。",
+        currentFile: "Checking...",
+        percent: 0,
+        error: null,
+      });
+      pushConvertLog(`开始检查 OGG 格式：${oggCandidates.length} 个候选文件`);
+
+      for (let i = 0; i < oggCandidates.length; i += 1) {
+        const item = oggCandidates[i];
+        setAudioProgress((prev) => ({
+          ...prev,
+          [item.id]: { stage: "checking", percent: prev[item.id]?.percent ?? 0 },
+        }));
+        setProcessing((prev) => ({
+          ...prev,
+          currentFile: `Checking: ${item.originalName}`,
+        }));
+        const info = await checkMinecraftOggReady(item.originalFile);
+        if (info.ready && info.channels != null && info.sampleRate != null) {
+          oggReadyMap.set(item.id, { channels: info.channels, sampleRate: info.sampleRate });
+        }
+        setProcessing((prev) => ({
+          ...prev,
+          percent: Math.min(99, Math.round((oggReadyMap.size / total) * 100)),
+        }));
+      }
+
+      if (oggReadyMap.size > 0) {
+        pushConvertLog(`检测到 ${oggReadyMap.size} 个合规 OGG：将跳过转码`);
+        setAudioProgress((prev) => {
+          const next = { ...prev };
+          for (const id of oggReadyMap.keys()) next[id] = { stage: "skipped", percent: 100 };
+          return next;
+        });
+        setFiles((prev) =>
+          prev.map((f) =>
+            oggReadyMap.has(f.id) ? { ...f, status: "done", processedBlob: f.originalFile } : f
+          )
+        );
+        for (const f of files) {
+          if (oggReadyMap.has(f.id)) results[f.id] = f.originalFile;
+        }
+      } else {
+        pushConvertLog("未检测到可直接复用的合规 OGG");
+      }
+
+      setAudioProgress((prev) => {
+        const next = { ...prev };
+        for (const item of oggCandidates) {
+          if (oggReadyMap.has(item.id)) continue;
+          if (next[item.id]?.stage === "checking") next[item.id] = { stage: "queued", percent: 0 };
+        }
+        return next;
+      });
+    }
+
+    const toConvert = files.filter((f) => !oggReadyMap.has(f.id));
+    const baseDone = oggReadyMap.size;
+    if (toConvert.length === 0) {
+      setProcessing({
+        title: "无需转换",
+        desc: "全部音频已符合 Minecraft 的 OGG (Vorbis) 规格。",
+        currentFile: "All files ready",
+        percent: 100,
+        error: null,
+      });
+      pushConvertLog("全部文件无需转码，跳过转换器加载");
+      await sleep(1000);
+      setFiles((prev) => prev.map((f) => ({ ...f, processedBlob: results[f.id] ?? f.processedBlob })));
+      pushConvertLog("准备进入打包下载步骤");
+      goToStep(4);
+      return;
+    }
 
     setProcessing({
       title: "正在加载转换器...",
       desc: "首次加载需要下载 wasm 资源，后续会更快。",
       currentFile: "Loading...",
-      percent: 0,
+      percent: Math.min(99, Math.round((baseDone / total) * 100)),
       error: null,
     });
 
@@ -1343,15 +1626,12 @@ export default function AudioPackGenerator() {
       title: "正在转换格式...",
       desc: "正在将音频统一转码为 Minecraft 支持的 OGG (Vorbis)。",
       currentFile: "Starting...",
-      percent: 0,
+      percent: Math.min(99, Math.round((baseDone / total) * 100)),
       error: null,
     });
 
-    const results: Record<string, Blob> = {};
-
-    for (let i = 0; i < total; i += 1) {
-      const item = files[i];
-      pushConvertLog(`[${i + 1}/${total}] 转换：${item.originalName} -> ${item.newName}.ogg`);
+    for (let i = 0; i < toConvert.length; i += 1) {
+      const item = toConvert[i];
       setFiles((prev) =>
         prev.map((f) => (f.id === item.id ? { ...f, status: "processing" } : f))
       );
@@ -1361,12 +1641,24 @@ export default function AudioPackGenerator() {
         currentFile: `Processing: ${item.originalName}`,
       }));
 
-      const unsubscribe = ffmpeg.onProgress((p) => {
-        const overall = Math.min(100, Math.round(((i + p / 100) / total) * 100));
-        setProcessing((prev) => ({ ...prev, percent: overall }));
-      });
-
+      let unsubscribe: (() => void) | null = null;
       try {
+        const indexLabel = baseDone + i + 1;
+        setAudioProgress((prev) => ({ ...prev, [item.id]: { stage: "loading", percent: 0 } }));
+        await sleep(1000);
+        setAudioProgress((prev) => ({ ...prev, [item.id]: { stage: "converting", percent: 0 } }));
+        pushConvertLog(`[${indexLabel}/${total}] 转换：${item.originalName} -> ${item.newName}.ogg`);
+        unsubscribe = ffmpeg.onProgress(
+          (p) => {
+          setAudioProgress((prev) => ({
+            ...prev,
+            [item.id]: { stage: "converting", percent: Math.min(100, Math.max(0, p)) },
+          }));
+          const overall = Math.min(100, Math.round(((baseDone + i + p / 100) / total) * 100));
+          setProcessing((prev) => ({ ...prev, percent: overall }));
+          },
+          { immediate: false }
+        );
         const converted = await ffmpeg.toOGG(item.originalFile, { sampleRate: 44100, channels: 2 });
         results[item.id] = converted.blob;
         setFiles((prev) =>
@@ -1374,12 +1666,16 @@ export default function AudioPackGenerator() {
             f.id === item.id ? { ...f, status: "done", processedBlob: converted.blob } : f
           )
         );
-        pushConvertLog(`[${i + 1}/${total}] 完成：${item.newName}.ogg`);
+        pushConvertLog(`[${indexLabel}/${total}] 完成：${item.newName}.ogg`);
+        setAudioProgress((prev) => ({ ...prev, [item.id]: { stage: "done", percent: 100 } }));
+        await sleep(1000);
       } catch (err) {
         pushConvertLog(
-          `[${i + 1}/${total}] 失败：${err instanceof Error ? err.message : "convert failed"}`,
+          `[${baseDone + i + 1}/${total}] 失败：${err instanceof Error ? err.message : "convert failed"}`,
           "error"
         );
+        setAudioProgress((prev) => ({ ...prev, [item.id]: { stage: "error", percent: 0 } }));
+        await sleep(1000);
         setFiles((prev) =>
           prev.map((f) => (f.id === item.id ? { ...f, status: "error" } : f))
         );
@@ -1389,10 +1685,9 @@ export default function AudioPackGenerator() {
           desc: "请尝试更换音频文件或刷新后重试。",
           error: err instanceof Error ? err.message : "convert failed",
         }));
-        unsubscribe();
         return;
       } finally {
-        unsubscribe();
+        unsubscribe?.();
       }
     }
 
@@ -1782,38 +2077,30 @@ export default function AudioPackGenerator() {
             ) : null}
 
             {step === 3 ? (
-              <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-hidden">
-                <div className="shrink-0 rounded-2xl border border-slate-200 bg-white p-6">
-                  <div className="flex flex-col items-center justify-center text-center">
-                    <div className="relative mb-6 h-20 w-20">
-                      <div className="absolute inset-0 rounded-full border-4 border-slate-100" />
-                      <div
-                        className={[
-                          "absolute inset-0 rounded-full border-4 border-sky-400 border-t-transparent",
-                          processing.error ? "opacity-30" : "animate-spin",
-                        ].join(" ")}
-                      />
-                      <div className="absolute inset-0 flex items-center justify-center font-bold text-sky-500">
-                        {processing.percent}%
+              <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-hidden">
+                <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="border-b border-slate-100 px-4 py-3">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-extrabold text-slate-800">格式转换进度</div>
+                        <div className="text-[11px] font-bold text-slate-400 sm:text-xs">
+                          总进度 {processing.percent}% · 已完成 {finishedAudioCount}/{fileCount}
+                        </div>
+                      </div>
+                      <div className="rounded bg-slate-50 px-3 py-1 font-mono text-xs text-slate-400">
+                        {processing.currentFile}
                       </div>
                     </div>
 
-                    <h2 className="mb-2 text-2xl font-extrabold text-slate-800">{processing.title}</h2>
-                    <p className="mb-8 text-slate-500">{processing.desc}</p>
-
-                    <div className="mb-4 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+                    <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-100">
                       <div
                         className="h-full bg-sky-400 transition-all duration-300"
                         style={{ width: `${processing.percent}%` }}
                       />
                     </div>
 
-                    <div className="rounded border border-slate-200 bg-slate-50 px-3 py-1 font-mono text-xs text-slate-400">
-                      {processing.currentFile}
-                    </div>
-
                     {processing.error ? (
-                      <div className="mt-6 flex gap-3">
+                      <div className="mt-3 flex justify-end">
                         <button
                           type="button"
                           onClick={() => goToStep(2)}
@@ -1823,6 +2110,72 @@ export default function AudioPackGenerator() {
                         </button>
                       </div>
                     ) : null}
+                  </div>
+
+                  <div className="max-h-80 overflow-y-auto">
+                    {files.length ? (
+                      <div className="divide-y divide-slate-100">
+                        {files.map((f) => {
+                          const stage = audioProgress[f.id]?.stage;
+                          const percent = audioProgress[f.id]?.percent ?? 0;
+                          const viewStage =
+                            stage ??
+                            (f.status === "error"
+                              ? ("error" as const)
+                              : f.status === "done"
+                                ? ("done" as const)
+                                : f.status === "processing"
+                                  ? ("converting" as const)
+                                  : ("queued" as const));
+
+                          const rowActive =
+                            viewStage === "checking" ||
+                            viewStage === "loading" ||
+                            viewStage === "converting";
+                          const rowClass = [
+                            "flex items-center justify-between gap-3 px-4 py-3 transition-colors duration-1000",
+                            rowActive ? "bg-sky-50" : "bg-white",
+                          ].join(" ");
+
+                          return (
+                            <div key={f.id} className={rowClass}>
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-bold text-slate-700">
+                                  {f.originalName}
+                                </div>
+                                {viewStage === "skipped" ? (
+                                  <div className="mt-1 inline-flex rounded bg-slate-100 px-2 py-0.5 text-[11px] font-extrabold text-slate-500">
+                                    符合格式，已跳过
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <div className="transition-opacity duration-1000">
+                                  {viewStage === "loading" || viewStage === "checking" ? (
+                                    <Loader2 className="h-5 w-5 animate-spin text-sky-500" />
+                                  ) : viewStage === "converting" ? (
+                                    <CircleProgress percent={percent} />
+                                  ) : viewStage === "skipped" ? (
+                                    <ChevronDown className="h-5 w-5 text-slate-400" />
+                                  ) : viewStage === "done" ? (
+                                    <Check className="h-5 w-5 text-emerald-500" />
+                                  ) : viewStage === "error" ? (
+                                    <AlertCircle className="h-5 w-5 text-red-500" />
+                                  ) : (
+                                    <div className="h-2 w-2 rounded-full bg-slate-300" />
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="px-4 py-6 text-center text-sm font-bold text-slate-400">
+                        暂无音频
+                      </div>
+                    )}
                   </div>
                 </div>
 
