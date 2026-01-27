@@ -14,9 +14,11 @@ import {
   File as FileIcon,
   Folder,
   Image as ImageIcon,
+  Moon,
   Package,
   Play,
   Plus,
+  Sun,
   Trash2,
   UploadCloud,
   X,
@@ -51,11 +53,27 @@ type LangContextValue = {
   tr: (zh: string, en: string) => string;
 };
 
+type ThemeMode = "light" | "dark";
+
+type ThemeContextValue = {
+  theme: ThemeMode;
+  setTheme: (theme: ThemeMode) => void;
+  toggleTheme: () => void;
+};
+
 const LangContext = createContext<LangContextValue | null>(null);
 
 function useLang() {
   const ctx = useContext(LangContext);
   if (!ctx) throw new Error("LangContext not found");
+  return ctx;
+}
+
+const ThemeContext = createContext<ThemeContextValue | null>(null);
+
+function useThemeMode() {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error("ThemeContext not found");
   return ctx;
 }
 
@@ -123,6 +141,60 @@ function LanguageToggleCompact({
         .join(" ")}
     >
       {label}
+    </button>
+  );
+}
+
+function ThemeToggle({
+  className,
+}: {
+  className?: string;
+}) {
+  const { theme, toggleTheme } = useThemeMode();
+  const { tr } = useLang();
+  const label = theme === "dark" ? tr("切换到亮色", "Switch to light") : tr("切换到暗色", "Switch to dark");
+  const Icon = theme === "dark" ? Sun : Moon;
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={toggleTheme}
+      className={[
+        "inline-flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50 p-1 transition hover:bg-slate-100 lg:p-3",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <Icon className="h-4 w-4 text-slate-600 transition lg:h-5 lg:w-5" />
+    </button>
+  );
+}
+
+function ThemeToggleCompact({
+  className,
+}: {
+  className?: string;
+}) {
+  const { theme, toggleTheme } = useThemeMode();
+  const { tr } = useLang();
+  const label = theme === "dark" ? tr("切换到亮色", "Switch to light") : tr("切换到暗色", "Switch to dark");
+  const Icon = theme === "dark" ? Sun : Moon;
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={toggleTheme}
+      className={[
+        "inline-flex h-7 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-slate-800",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <Icon className="h-4 w-4" />
     </button>
   );
 }
@@ -1586,11 +1658,12 @@ function MobileStepBar({
                   {tr("版本", "Version")}：v{WebConfig.appVersion}
                 </button>
                 <LanguageToggleCompact className="sm:hidden" />
+                <ThemeToggleCompact className="sm:hidden" />
               </div>
             </div>
           </div>
 
-          <div className="flex justify-end px-3 pb-2 sm:px-4">
+          <div className="flex justify-end sm:px-4">
             <FfmpegInlineStatus
               loaded={ffmpegLoaded}
               giveUp={ffmpegGiveUp}
@@ -1644,7 +1717,10 @@ function MobileStepBar({
             })}
           </div>
           <div className="mt-3 hidden justify-end sm:flex">
-            <LanguageToggle />
+            <div className="flex items-center gap-2">
+              <LanguageToggle />
+              <ThemeToggle />
+            </div>
           </div>
         </div>
       </div>
@@ -1735,7 +1811,10 @@ function Sidebar({
         />
       </div>
       <div className="-mt-2 pl-2">
-        <LanguageToggle />
+        <div className="flex items-center gap-2">
+          <LanguageToggle />
+          <ThemeToggle />
+        </div>
       </div>
     </aside>
   );
@@ -1772,6 +1851,52 @@ export default function AudioPackGenerator() {
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
+
+  const [theme, setThemeState] = useState<ThemeMode>("light");
+  const setTheme = useCallback((next: ThemeMode) => {
+    setThemeState(next);
+    try {
+      localStorage.setItem("mcsd_theme", next);
+    } catch {
+      void 0;
+    }
+  }, []);
+  const toggleTheme = useCallback(() => {
+    setThemeState((prev) => {
+      const next = prev === "dark" ? "light" : "dark";
+      try {
+        localStorage.setItem("mcsd_theme", next);
+      } catch {
+        void 0;
+      }
+      return next;
+    });
+  }, []);
+  const themeContextValue = useMemo<ThemeContextValue>(
+    () => ({ theme, setTheme, toggleTheme }),
+    [setTheme, theme, toggleTheme]
+  );
+
+  useEffect(() => {
+    let initial: ThemeMode | null = null;
+    try {
+      const raw = localStorage.getItem("mcsd_theme");
+      if (raw === "light" || raw === "dark") initial = raw;
+    } catch {
+      initial = null;
+    }
+    if (!initial) {
+      const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
+      initial = prefersDark ? "dark" : "light";
+    }
+    setThemeState(initial);
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("dark", theme === "dark");
+    root.classList.toggle("light", theme === "light");
+  }, [theme]);
 
   const [step, setStep] = useState<Step>(1);
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -2860,7 +2985,8 @@ export default function AudioPackGenerator() {
 
   return (
     <LangContext.Provider value={langContextValue}>
-      <div className="h-dvh overflow-hidden bg-slate-50 text-slate-900">
+      <ThemeContext.Provider value={themeContextValue}>
+        <div className="h-dvh overflow-hidden bg-slate-50 text-slate-900">
       {!ffmpegLoaded ? (
         <FfmpegBlockingOverlay
           stage={ffmpegGiveUp ? "failed" : "loading"}
@@ -3129,8 +3255,8 @@ export default function AudioPackGenerator() {
                               checked={meta.modifyVanilla}
                               onChange={(e) => setMeta((prev) => ({ ...prev, modifyVanilla: e.target.checked }))}
                             />
-                            <div className="h-7 w-12 rounded-full bg-slate-200 transition peer-checked:bg-sky-400" />
-                            <div className="pointer-events-none absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" />
+                            <div className="h-7 w-12 rounded-full bg-[color:var(--surface-strong)] transition-colors peer-checked:bg-sky-400" />
+                            <div className="pointer-events-none absolute left-1 top-1 h-5 w-5 rounded-full bg-[#ffffff] shadow-sm transition-transform peer-checked:translate-x-5" />
                           </div>
                         </label>
                       </div>
@@ -3626,6 +3752,7 @@ export default function AudioPackGenerator() {
         </datalist>
       ) : null}
       </div>
+      </ThemeContext.Provider>
     </LangContext.Provider>
   );
 }
