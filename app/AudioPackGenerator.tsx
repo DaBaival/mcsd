@@ -1821,10 +1821,14 @@ function Sidebar({
 }
 
 export default function AudioPackGenerator() {
+  const hasUserLangPrefRef = useRef(false);
+  const hasUserThemePrefRef = useRef(false);
+
   const [lang, setLangState] = useState<Lang>("zh");
   const tr = useCallback((zh: string, en: string) => (lang === "zh" ? zh : en), [lang]);
   const setLang = useCallback((next: Lang) => {
     setLangState(next);
+    hasUserLangPrefRef.current = true;
     try {
       localStorage.setItem("mcsd_lang", next);
     } catch {
@@ -1834,6 +1838,12 @@ export default function AudioPackGenerator() {
   const langContextValue = useMemo<LangContextValue>(() => ({ lang, setLang, tr }), [lang, setLang, tr]);
 
   useEffect(() => {
+    const getBrowserLang = (): Lang => {
+      const langs = typeof navigator !== "undefined" ? navigator.languages : null;
+      const candidate = (langs && langs.length > 0 ? langs[0] : navigator?.language ?? "").toLowerCase();
+      return candidate.startsWith("zh") ? "zh" : "en";
+    };
+
     let initial: Lang | null = null;
     try {
       const raw = localStorage.getItem("mcsd_lang");
@@ -1842,10 +1852,21 @@ export default function AudioPackGenerator() {
       initial = null;
     }
     if (!initial) {
-      const nav = typeof navigator !== "undefined" ? navigator.language : "";
-      initial = nav.toLowerCase().startsWith("zh") ? "zh" : "en";
+      initial = getBrowserLang();
+      hasUserLangPrefRef.current = false;
+    } else {
+      hasUserLangPrefRef.current = true;
     }
     setLangState(initial);
+
+    const onLanguageChange = () => {
+      if (hasUserLangPrefRef.current) return;
+      setLangState(getBrowserLang());
+    };
+    window.addEventListener("languagechange", onLanguageChange);
+    return () => {
+      window.removeEventListener("languagechange", onLanguageChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -1853,8 +1874,11 @@ export default function AudioPackGenerator() {
   }, [lang]);
 
   const [theme, setThemeState] = useState<ThemeMode>("light");
+  const [themeReady, setThemeReady] = useState(false);
   const setTheme = useCallback((next: ThemeMode) => {
     setThemeState(next);
+    setThemeReady(true);
+    hasUserThemePrefRef.current = true;
     try {
       localStorage.setItem("mcsd_theme", next);
     } catch {
@@ -1862,6 +1886,8 @@ export default function AudioPackGenerator() {
     }
   }, []);
   const toggleTheme = useCallback(() => {
+    setThemeReady(true);
+    hasUserThemePrefRef.current = true;
     setThemeState((prev) => {
       const next = prev === "dark" ? "light" : "dark";
       try {
@@ -1878,6 +1904,9 @@ export default function AudioPackGenerator() {
   );
 
   useEffect(() => {
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    const getBrowserTheme = (): ThemeMode => (mql.matches ? "dark" : "light");
+
     let initial: ThemeMode | null = null;
     try {
       const raw = localStorage.getItem("mcsd_theme");
@@ -1886,17 +1915,30 @@ export default function AudioPackGenerator() {
       initial = null;
     }
     if (!initial) {
-      const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
-      initial = prefersDark ? "dark" : "light";
+      hasUserThemePrefRef.current = false;
+      initial = getBrowserTheme();
+    } else {
+      hasUserThemePrefRef.current = true;
     }
     setThemeState(initial);
+    setThemeReady(true);
+
+    const onSystemThemeChange = () => {
+      if (hasUserThemePrefRef.current) return;
+      setThemeState(getBrowserTheme());
+    };
+    mql.addEventListener("change", onSystemThemeChange);
+    return () => {
+      mql.removeEventListener("change", onSystemThemeChange);
+    };
   }, []);
 
   useEffect(() => {
+    if (!themeReady) return;
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
     root.classList.toggle("light", theme === "light");
-  }, [theme]);
+  }, [theme, themeReady]);
 
   const [step, setStep] = useState<Step>(1);
   const [files, setFiles] = useState<FileItem[]>([]);
