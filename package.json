@@ -9,6 +9,7 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit"
   },
+  "license": "MIT",
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
