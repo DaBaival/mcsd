@@ -16,6 +16,7 @@ const defaultTitle = "Minecraft 音频包生成器";
 const description = "在线生成Minecraft音频包，使用在线FFmpeg转换音频文件。纯本地运算，无需上传文件到服务器。";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"),
   applicationName: `${defaultTitle}`,
   title: {
     default: defaultTitle,
@@ -73,12 +74,12 @@ export const metadata: Metadata = {
     icon: [{ url: "/favicon.ico" }],
     apple: [{ url: "/favicon.ico" }],
   },
-  themeColor: "#38bdf8",
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  themeColor: "#38bdf8",
 };
 
 export default function RootLayout({
