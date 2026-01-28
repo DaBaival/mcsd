@@ -2013,6 +2013,7 @@ export default function AudioPackGenerator() {
   const [vanillaEventOptions, setVanillaEventOptions] = useState<VanillaEventOption[]>([]);
   const [vanillaEventLoading, setVanillaEventLoading] = useState(false);
   const [vanillaEventLoadFailed, setVanillaEventLoadFailed] = useState(false);
+  const vanillaEventOptionsPlatformRef = useRef<PackPlatform | null>(null);
 
   const [processing, setProcessing] = useState<{
     title: string;
@@ -2285,9 +2286,17 @@ export default function AudioPackGenerator() {
   useEffect(() => {
     if (!meta.modifyVanilla) return;
     if (step !== 2) return;
-    if (vanillaEventOptions.length > 0 && !vanillaEventLoading && !vanillaEventLoadFailed) return;
+    if (
+      vanillaEventOptionsPlatformRef.current === meta.platform &&
+      vanillaEventOptions.length > 0 &&
+      !vanillaEventLoading &&
+      !vanillaEventLoadFailed
+    ) {
+      return;
+    }
     setVanillaEventLoading(true);
     setVanillaEventOptions(meta.platform === "bedrock" ? BEDROCK_VANILLA_EVENT_OPTIONS : JAVA_VANILLA_EVENT_OPTIONS);
+    vanillaEventOptionsPlatformRef.current = meta.platform;
     setVanillaEventLoading(false);
     setVanillaEventLoadFailed(false);
   }, [meta.modifyVanilla, meta.platform, step, vanillaEventLoadFailed, vanillaEventLoading, vanillaEventOptions.length]);
