@@ -606,34 +606,50 @@ function sanitizeSoundName(input: string) {
   return clampText(cleaned, 8);
 }
 
-function buildJavaPackMcmeta(packFormat: number, description: string) {
-  if (packFormat >= 65) {
-    return {
-      pack: {
-        pack_format: packFormat,
-        description,
-        min_format: [packFormat, 0],
-        max_format: [packFormat, 0],
-      },
-    };
+function parsePackFormatText(input: string): { raw: string; major: number; minor: number } | null {
+  const raw = input.trim();
+  if (!/^\d+(?:\.\d+)?$/.test(raw)) return null;
+  const [majorText, minorText] = raw.split(".", 2);
+  if (majorText.length > 1 && majorText.startsWith("0")) return null;
+  const major = Number(majorText);
+  const minor = minorText ? Number(minorText) : 0;
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return null;
+  if (major <= 0 || minor < 0) return null;
+  return { raw, major, minor };
+}
+
+function buildJavaPackMcmetaText(packFormatRaw: string, description: string) {
+  const parsed = parsePackFormatText(packFormatRaw);
+  const safe = parsed ?? { raw: "15", major: 15, minor: 0 };
+  const descriptionJson = JSON.stringify(description);
+
+  if (safe.major >= 65) {
+    return `{
+  "pack": {
+    "pack_format": ${safe.raw},
+    "description": ${descriptionJson},
+    "min_format": [${safe.raw}, 0],
+    "max_format": [${safe.raw}, 0]
+  }
+}`;
   }
 
-  if (packFormat >= 16) {
-    return {
-      pack: {
-        pack_format: packFormat,
-        description,
-        supported_formats: [packFormat, packFormat],
-      },
-    };
+  if (safe.major >= 16) {
+    return `{
+  "pack": {
+    "pack_format": ${safe.raw},
+    "description": ${descriptionJson},
+    "supported_formats": [${safe.major}, ${safe.major}]
+  }
+}`;
   }
 
-  return {
-    pack: {
-      pack_format: packFormat,
-      description,
-    },
-  };
+  return `{
+  "pack": {
+    "pack_format": ${safe.raw},
+    "description": ${descriptionJson}
+  }
+}`;
 }
 
 function buildId() {
@@ -3278,10 +3294,8 @@ export default function AudioPackGenerator() {
     }
 
     if (meta.platform === "java") {
-      const parsedPackFormat = Number.parseInt(meta.javaPackFormat, 10);
-      const packFormat = Number.isFinite(parsedPackFormat) && parsedPackFormat > 0 ? parsedPackFormat : 15;
-      const mcmeta = buildJavaPackMcmeta(packFormat, buildPackDescription(meta.desc));
-      zip.file("pack.mcmeta", JSON.stringify(mcmeta, null, 2));
+      const mcmetaText = buildJavaPackMcmetaText(meta.javaPackFormat, buildPackDescription(meta.desc));
+      zip.file("pack.mcmeta", mcmetaText);
 
       if (meta.iconFile) {
         const iconBuffer = await readFileAsArrayBuffer(meta.iconFile);

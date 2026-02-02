@@ -1,4 +1,11 @@
 export const update_logs = {
+    "0.0.4": {
+        "date": "2026-02-02",
+        "logs": `本次更新主要修复资源包元数据 pack_format 的写入精度问题。
+
+- 修复：生成 Java 资源包时，pack.mcmeta 中 pack_format 不再将浮点截断为整数
+- 修复：min_format/max_format 按 pack_format 原始精度写入（浮点保持浮点，整数保持整数）`
+    },
     "0.0.3": {
         "date": "2026-02-02",
         "logs": `本次更新主要优化资源包版本选择体验、完善引导并修复版本列表缺失问题。

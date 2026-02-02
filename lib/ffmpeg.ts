@@ -103,8 +103,8 @@ export class FFmpegService {
         });
 
         const cdnBases = [
-          "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd",
-          "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm",
+          "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd",
+          "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd",
         ] as const;
 
         const preferredBase = (() => {
