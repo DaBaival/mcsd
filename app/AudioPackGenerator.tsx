@@ -340,8 +340,8 @@ function buildImmersiveGuideItems({
       {
         title: tr("继续下一步", "Continue"),
         desc: tr(
-          "点击“下一步”返回导入音频，继续完成替换原版事件与开始处理。",
-          "Click “Next” to return and continue mapping events and processing."
+          "点击“下一步”返回导入音频，进入事件管理配置权重/音高/音量。",
+          "Click “Next” to return and configure weight/pitch/volume in Event Manager."
         ),
         anchorKey: "step1Next",
         primaryLabel: tr("下一步", "Next"),
@@ -354,16 +354,19 @@ function buildImmersiveGuideItems({
 
     const step2: GuideItem[] = [
       {
-        title: tr("选择要替换的原版事件", "Choose Vanilla Events"),
+        title: tr("打开事件管理", "Open Event Manager"),
         desc: tr(
-          "为每个文件选择 minecraft:... 原版声音事件；留空则不替换。",
-          "Pick a minecraft:... sound event for each file; leave empty to skip."
+          "点击文件右侧“点此管理事件（可添加多个）”，进入事件管理。",
+          "Click “Manage events (multiple)” to open Event Manager for the file."
         ),
         anchorKey: "step2VanillaEvent",
       },
       {
-        title: tr("进入第三步", "Go to Step 3"),
-        desc: tr("确认无误后点击“开始处理”，进入第三步继续引导。", "Click “Process” to continue the guide."),
+        title: tr("配置事件并开始处理", "Configure and Process"),
+        desc: tr(
+          "在事件管理里添加事件并调整权重/音高/音量，确认无误后点击“开始处理”。",
+          "Add events and adjust weight/pitch/volume in Event Manager, then click “Process”."
+        ),
         anchorKey: "step2StartProcessing",
         primaryLabel: tr("开始处理", "Process"),
         primaryAction: startProcessing,
@@ -411,8 +414,8 @@ function buildImmersiveGuideItems({
     {
       title: tr("拖拽区与重命名", "Drop Zone & Rename"),
       desc: tr(
-        "可在列表里重命名；移动端会弹窗编辑。点击“下一步”进入“修改原版音频”。",
-        "Rename in the list (mobile uses a dialog). Click “Next” to configure vanilla replacement."
+        "可在列表里重命名；移动端会弹窗编辑。点击“下一步”进入原版事件配置（可选）。",
+        "Rename in the list (mobile uses a dialog). Click “Next” to optionally configure vanilla events."
       ),
       anchorKey: "step2DropZone",
       primaryLabel: tr("下一步", "Next"),
