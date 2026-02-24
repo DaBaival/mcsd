@@ -220,6 +220,26 @@ type FileItem = {
   processedBlob: Blob | null;
 };
 
+function collectDuplicateFileNameIds(items: Array<Pick<FileItem, "id" | "newName">>) {
+  const nameToIds = new Map<string, string[]>();
+  for (const item of items) {
+    const name = item.newName.trim().toLowerCase();
+    if (!name) continue;
+    const existing = nameToIds.get(name);
+    if (existing) {
+      existing.push(item.id);
+    } else {
+      nameToIds.set(name, [item.id]);
+    }
+  }
+  const duplicatedIds = new Set<string>();
+  for (const ids of nameToIds.values()) {
+    if (ids.length <= 1) continue;
+    for (const id of ids) duplicatedIds.add(id);
+  }
+  return duplicatedIds;
+}
+
 type VanillaEventMapping = {
   event: string;
   weight: number;
@@ -258,7 +278,6 @@ type GuideAnchorKey =
   | "step1Key"
   | "step1Platform"
   | "step1JavaPackFormat"
-  | "step1ModifyVanilla"
   | "step1Desc"
   | "step1Next"
   | "step2AddFiles"
@@ -313,71 +332,17 @@ function buildImmersiveGuideItems({
   tr,
   step,
   platform,
-  guidePhase,
   processingError,
   goToStep,
   startProcessing,
-  enableModifyVanilla,
-  startVanillaGuide,
 }: {
   tr: (zh: string, en: string) => string;
   step: Step;
   platform: PackPlatform;
-  guidePhase: "main" | "vanilla";
   processingError: string | null;
   goToStep: (target: Step) => void;
   startProcessing: () => void;
-  enableModifyVanilla: () => void;
-  startVanillaGuide: () => void;
 }): GuideItem[] {
-  if (guidePhase === "vanilla") {
-    const step1: GuideItem[] = [
-      {
-        title: tr("打开“修改原版音频”", "Enable “Replace Vanilla Sounds”"),
-        desc: tr("如果想替换原版声音事件，需要打开开关。", "Turn this on to map new sounds to vanilla events."),
-        anchorKey: "step1ModifyVanilla",
-      },
-      {
-        title: tr("继续下一步", "Continue"),
-        desc: tr(
-          "点击“下一步”返回导入音频，进入事件管理配置权重/音高/音量。",
-          "Click “Next” to return and configure weight/pitch/volume in Event Manager."
-        ),
-        anchorKey: "step1Next",
-        primaryLabel: tr("下一步", "Next"),
-        primaryAction: () => {
-          enableModifyVanilla();
-          goToStep(2);
-        },
-      },
-    ];
-
-    const step2: GuideItem[] = [
-      {
-        title: tr("打开事件管理", "Open Event Manager"),
-        desc: tr(
-          "点击文件右侧“点此管理事件（可添加多个）”，进入事件管理。",
-          "Click “Manage events (multiple)” to open Event Manager for the file."
-        ),
-        anchorKey: "step2VanillaEvent",
-      },
-      {
-        title: tr("配置事件并开始处理", "Configure and Process"),
-        desc: tr(
-          "在事件管理里添加事件并调整权重/音高/音量，确认无误后点击“开始处理”。",
-          "Add events and adjust weight/pitch/volume in Event Manager, then click “Process”."
-        ),
-        anchorKey: "step2StartProcessing",
-        primaryLabel: tr("开始处理", "Process"),
-        primaryAction: startProcessing,
-      },
-    ];
-
-    if (step === 1) return step1;
-    if (step === 2) return step2;
-    return [];
-  }
-
   const step1: GuideItem[] = [
     {
       title: tr("上传封面（可选）", "Upload Icon (Optional)"),
@@ -410,16 +375,36 @@ function buildImmersiveGuideItems({
   ];
 
   const step2: GuideItem[] = [
-    { title: tr("添加音频文件", "Add Audio Files"), desc: tr("点击“添加文件”，或直接把文件拖入页面。", "Click “Add Files” or drag files into the page."), anchorKey: "step2AddFiles" },
+    {
+      title: tr("添加音频文件", "Add Audio Files"),
+      desc: tr("点击“添加文件”，或直接把文件拖入页面。", "Click “Add Files” or drag files into the page."),
+      anchorKey: "step2AddFiles",
+    },
     {
       title: tr("拖拽区与重命名", "Drop Zone & Rename"),
       desc: tr(
-        "可在列表里重命名；移动端会弹窗编辑。点击“下一步”进入原版事件配置（可选）。",
-        "Rename in the list (mobile uses a dialog). Click “Next” to optionally configure vanilla events."
+        "可在列表里重命名；移动端会弹窗编辑。",
+        "Rename in the list (mobile uses a dialog)."
       ),
       anchorKey: "step2DropZone",
-      primaryLabel: tr("下一步", "Next"),
-      primaryAction: startVanillaGuide,
+    },
+    {
+      title: tr("打开事件管理", "Open Event Manager"),
+      desc: tr(
+        "点击右侧“点此管理事件（可添加多个）”，在弹窗里添加事件并配置权重/音高/音量。",
+        "Click “Manage events (multiple)” and configure weight/pitch/volume in the dialog."
+      ),
+      anchorKey: "step2VanillaEvent",
+    },
+    {
+      title: tr("开始处理", "Process"),
+      desc: tr(
+        "点击“开始处理”会进行命名审查；若重名会高亮提示，需修改后才能继续。",
+        "Click “Process” to run name review. Duplicates will be highlighted and must be fixed before continuing."
+      ),
+      anchorKey: "step2StartProcessing",
+      primaryLabel: tr("开始处理", "Process"),
+      primaryAction: startProcessing,
     },
   ];
 
@@ -456,11 +441,14 @@ function buildImmersiveGuideItems({
     { title: tr("复制命令", "Copy Commands"), desc: tr("每条命令右侧可一键复制。", "Copy each command with one click."), anchorKey: undefined },
   ];
 
-  if (step === 1) return step1;
-  if (step === 2) return step2;
-  if (step === 3) return step3;
-  if (step === 4) return step4;
-  return step5;
+  const byStep: Record<Step, GuideItem[]> = {
+    1: step1,
+    2: step2,
+    3: step3,
+    4: step4,
+    5: step5,
+  };
+  return byStep[step] ?? step5;
 }
 
 function clampDescForPlatform(desc: string, platform: PackPlatform) {
@@ -697,6 +685,13 @@ function processFileName(name: string) {
   return clampText(res || "sound", 8);
 }
 
+function getAudioBaseName(name: string) {
+  const base = name.trim();
+  if (!base) return "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
 function readFileAsArrayBuffer(file: File) {
   return file.arrayBuffer();
 }
@@ -924,10 +919,16 @@ function uuid() {
   });
 }
 
+type SubtitleContext = {
+  customByFileId: Record<string, string>;
+  byEventKey: Record<string, string>;
+};
+
 function buildJavaSoundsJson(
   key: string,
-  files: Array<Pick<FileItem, "newName" | "vanillaEvents">>,
-  modifyVanilla: boolean
+  files: Array<Pick<FileItem, "id" | "newName" | "vanillaEvents">>,
+  modifyVanilla: boolean,
+  subtitles: SubtitleContext
 ) {
   const soundsJson: Record<string, unknown> = {};
   for (const f of files) {
@@ -941,7 +942,11 @@ function buildJavaSoundsJson(
         seen.add(eventKey);
 
         const existing = soundsJson[eventKey] as
-          | { replace?: boolean; sounds?: Array<{ name: string; stream?: boolean; weight?: number; pitch?: number; volume?: number }> }
+          | {
+              replace?: boolean;
+              subtitle?: string;
+              sounds?: Array<{ name: string; stream?: boolean; weight?: number; pitch?: number; volume?: number }>;
+            }
           | undefined;
         const sounds = Array.isArray(existing?.sounds) ? [...existing.sounds] : [];
         sounds.push(
@@ -958,8 +963,11 @@ function buildJavaSoundsJson(
             volume?: number;
           }
         );
+        const subtitle = subtitles.byEventKey[eventKey]?.trim();
+        const nextSubtitle = existing?.subtitle ?? subtitle;
         soundsJson[eventKey] = {
           replace: true,
+          ...(nextSubtitle ? { subtitle: nextSubtitle } : {}),
           sounds,
         };
       }
@@ -967,18 +975,26 @@ function buildJavaSoundsJson(
     }
 
     const customKey = `${key}.${f.newName}`;
-    const existing = soundsJson[customKey] as { sounds?: Array<{ name: string; stream?: boolean }> } | undefined;
+    const existing = soundsJson[customKey] as
+      | { sounds?: Array<{ name: string; stream?: boolean }>; subtitle?: string }
+      | undefined;
     const sounds = Array.isArray(existing?.sounds) ? [...existing.sounds] : [];
     sounds.push({ name: `${soundPath}`, stream: true });
-    soundsJson[customKey] = { sounds };
+    const subtitle = subtitles.customByFileId[f.id]?.trim();
+    const nextSubtitle = existing?.subtitle ?? subtitle;
+    soundsJson[customKey] = {
+      sounds,
+      ...(nextSubtitle ? { subtitle: nextSubtitle } : {}),
+    };
   }
   return soundsJson;
 }
 
 function buildBedrockSoundDefinitions(
   key: string,
-  files: Array<Pick<FileItem, "newName" | "vanillaEvents">>,
-  modifyVanilla: boolean
+  files: Array<Pick<FileItem, "id" | "newName" | "vanillaEvents">>,
+  modifyVanilla: boolean,
+  subtitles: SubtitleContext
 ) {
   const definitions: Record<string, unknown> = {
     format_version: "1.14.0",
@@ -987,7 +1003,11 @@ function buildBedrockSoundDefinitions(
 
   const soundDefinitions = definitions.sound_definitions as Record<
     string,
-    { category: string; sounds: Array<string | { name: string; volume?: number; pitch?: number; weight?: number }> }
+    {
+      category: string;
+      subtitle?: string;
+      sounds: Array<string | { name: string; volume?: number; pitch?: number; weight?: number }>;
+    }
   >;
 
   for (const f of files) {
@@ -1019,10 +1039,14 @@ function buildBedrockSoundDefinitions(
               },
             ];
           }
+          const subtitle = subtitles.byEventKey[eventKey]?.trim();
+          if (!existing.subtitle && subtitle) existing.subtitle = subtitle;
           continue;
         }
+        const subtitle = subtitles.byEventKey[eventKey]?.trim();
         soundDefinitions[eventKey] = {
           category: "record",
+          ...(subtitle ? { subtitle } : {}),
           sounds: [
             [
               { name: soundValue },
@@ -1045,10 +1069,14 @@ function buildBedrockSoundDefinitions(
     const existing = soundDefinitions[customKey];
     if (existing) {
       if (!existing.sounds.includes(soundValue)) existing.sounds = [...existing.sounds, soundValue];
+      const subtitle = subtitles.customByFileId[f.id]?.trim();
+      if (!existing.subtitle && subtitle) existing.subtitle = subtitle;
       continue;
     }
+    const subtitle = subtitles.customByFileId[f.id]?.trim();
     soundDefinitions[customKey] = {
       category: "record",
+      ...(subtitle ? { subtitle } : {}),
       sounds: [soundValue],
     };
   }
@@ -2085,6 +2113,7 @@ function ImmersiveGuideOverlay({
   onNext: () => void;
   onSkip: () => void;
 }) {
+  const { tr } = useLang();
   const padding = 12;
   const viewportW = typeof window === "undefined" ? 0 : window.innerWidth;
   const viewportH = typeof window === "undefined" ? 0 : window.innerHeight;
@@ -2133,7 +2162,10 @@ function ImmersiveGuideOverlay({
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="text-xs font-extrabold text-slate-400">
-                第 {step} 步 · {stepTitle} · {itemIndex + 1}/{itemTotal}
+                {tr(
+                  `第 ${step} 步 · ${stepTitle} · ${itemIndex + 1}/${itemTotal}`,
+                  `Step ${step} · ${stepTitle} · ${itemIndex + 1}/${itemTotal}`
+                )}
               </div>
               <div className="mt-1 text-base font-extrabold text-slate-800">{item.title}</div>
               <div className="mt-1 text-sm text-slate-600">{item.desc}</div>
@@ -2143,7 +2175,7 @@ function ImmersiveGuideOverlay({
               onClick={onSkip}
               className="inline-flex shrink-0 items-center rounded-xl px-3 py-2 text-xs font-bold text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
             >
-              跳过
+              {tr("跳过", "Skip")}
             </button>
           </div>
 
@@ -2154,7 +2186,7 @@ function ImmersiveGuideOverlay({
               disabled={itemIndex <= 0}
               className="inline-flex items-center rounded-xl px-3 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 disabled:cursor-not-allowed disabled:text-slate-300"
             >
-              上一个
+              {tr("上一个", "Previous")}
             </button>
 
             <button
@@ -2162,7 +2194,9 @@ function ImmersiveGuideOverlay({
               onClick={onNext}
               className="inline-flex items-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-white shadow-[0_4px_14px_0_rgba(56,189,248,0.35)] transition hover:bg-sky-300"
             >
-              {itemIndex + 1 >= itemTotal ? item.primaryLabel ?? (item.primaryAction ? "继续" : "学会了") : "下一个"}
+              {itemIndex + 1 >= itemTotal
+                ? item.primaryLabel ?? (item.primaryAction ? tr("继续", "Continue") : tr("学会了", "Done"))
+                : tr("下一个", "Next")}
             </button>
           </div>
         </div>
@@ -2598,6 +2632,8 @@ export default function AudioPackGenerator() {
 
   const [step, setStep] = useState<Step>(1);
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [customSubtitles, setCustomSubtitles] = useState<Record<string, string>>({});
+  const [eventSubtitles, setEventSubtitles] = useState<Record<string, string>>({});
   const filesRef = useRef<FileItem[]>([]);
   const addingFilesRef = useRef(false);
   const snapshot = ffmpeg.getSnapshot();
@@ -2628,12 +2664,17 @@ export default function AudioPackGenerator() {
     javaPackFormat: DEFAULT_JAVA_PACK_FORMAT,
     iconFile: null,
     iconPreviewUrl: null,
-    modifyVanilla: false,
+    modifyVanilla: true,
   });
   const [packFormatDialogOpen, setPackFormatDialogOpen] = useState(false);
   const [packFormatDialogQuery, setPackFormatDialogQuery] = useState("");
   const packFormatDialogInputRef = useRef<HTMLInputElement | null>(null);
   const packFormatDialogLastActiveRef = useRef<HTMLElement | null>(null);
+
+  const [subtitleDialogOpen, setSubtitleDialogOpen] = useState(false);
+  const [subtitleDialogQuery, setSubtitleDialogQuery] = useState("");
+  const subtitleDialogInputRef = useRef<HTMLInputElement | null>(null);
+  const subtitleDialogLastActiveRef = useRef<HTMLElement | null>(null);
 
   const [vanillaEventOptions, setVanillaEventOptions] = useState<VanillaEventOption[]>([]);
   const [vanillaEventLoading, setVanillaEventLoading] = useState(false);
@@ -2661,8 +2702,19 @@ export default function AudioPackGenerator() {
   const [updateLogsOpen, setUpdateLogsOpen] = useState(false);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
-  const [guidePhase, setGuidePhase] = useState<"main" | "vanilla">("main");
   const [guideIndex, setGuideIndex] = useState(0);
+  const [nameReviewRequested, setNameReviewRequested] = useState(false);
+  const duplicateNameIds = useMemo(
+    () => (nameReviewRequested ? collectDuplicateFileNameIds(files) : new Set<string>()),
+    [files, nameReviewRequested]
+  );
+  const nameReviewError =
+    nameReviewRequested && duplicateNameIds.size > 0
+      ? tr(
+          "音频命名出现重复，请修改高亮的音频名称后再开始处理。",
+          "Duplicate audio names detected. Please rename highlighted items before processing."
+        )
+      : null;
   const [guideAnchorRect, setGuideAnchorRect] = useState<{
     top: number;
     left: number;
@@ -2679,7 +2731,6 @@ export default function AudioPackGenerator() {
     step1Key: null,
     step1Platform: null,
     step1JavaPackFormat: null,
-    step1ModifyVanilla: null,
     step1Desc: null,
     step1Next: null,
     step2AddFiles: null,
@@ -2705,7 +2756,6 @@ export default function AudioPackGenerator() {
     original: Pick<PackMeta, "name" | "key" | "desc">;
     sample: Pick<PackMeta, "name" | "key" | "desc">;
   } | null>(null);
-  const guideSecondRoundModifyVanillaOpenedRef = useRef(false);
   const guideDemoFilesRef = useRef<FileItem[] | null>(null);
 
   const nameCount = meta.name.length;
@@ -2980,9 +3030,9 @@ export default function AudioPackGenerator() {
   }, [meta.modifyVanilla, meta.platform, step, vanillaEventLoadFailed, vanillaEventLoading, vanillaEventOptions.length]);
 
   useEffect(() => {
-    if (meta.modifyVanilla && (files.length > 0 || (guideOpen && guidePhase === "vanilla" && step === 2))) return;
+    if (meta.modifyVanilla && (files.length > 0 || (guideOpen && step === 2))) return;
     guideAnchorsRef.current.step2VanillaEvent = null;
-  }, [files.length, guideOpen, guidePhase, meta.modifyVanilla, step]);
+  }, [files.length, guideOpen, meta.modifyVanilla, step]);
 
   useEffect(() => {
     if (!meta.iconFile) {
@@ -3136,13 +3186,12 @@ export default function AudioPackGenerator() {
     }
     if (acked) return;
     setGuideOpen(true);
-    setGuidePhase("main");
     setGuideIndex(0);
   }, [ffmpegLoaded]);
 
   useEffect(() => {
     if (!guideOpen) return;
-    setMeta((prev) => (prev.modifyVanilla ? { ...prev, modifyVanilla: false } : prev));
+    setMeta((prev) => (prev.modifyVanilla ? prev : { ...prev, modifyVanilla: true }));
   }, [guideOpen]);
 
   useEffect(() => {
@@ -3170,6 +3219,111 @@ export default function AudioPackGenerator() {
     if (!normalizedPackFormatQuery) return JAVA_PACK_FORMAT_OPTIONS;
     return JAVA_PACK_FORMAT_OPTIONS.filter((opt) => opt.version.toLowerCase().includes(normalizedPackFormatQuery));
   }, [normalizedPackFormatQuery]);
+
+  useEffect(() => {
+    if (!subtitleDialogOpen) return;
+    requestAnimationFrame(() => {
+      subtitleDialogInputRef.current?.focus();
+      subtitleDialogInputRef.current?.select();
+    });
+    return () => {
+      subtitleDialogLastActiveRef.current?.focus?.();
+    };
+  }, [subtitleDialogOpen]);
+
+  const normalizedSubtitleDialogQuery = subtitleDialogQuery.trim().toLowerCase();
+  const subtitleDialogFileById = useMemo(() => new Map(files.map((f) => [f.id, f] as const)), [files]);
+  const subtitleDialogItems = useMemo(() => {
+    const key = normalizeKey(meta.key);
+    const fileById = subtitleDialogFileById;
+
+    const eventToFileIds = new Map<string, string[]>();
+    const customFileIds: string[] = [];
+
+    for (const f of files) {
+      const mappings = meta.modifyVanilla ? (f.vanillaEvents ?? []) : [];
+      if (mappings.length > 0) {
+        for (const mapping of mappings) {
+          const eventKey = mapping.event.trim();
+          if (!eventKey) continue;
+          const existing = eventToFileIds.get(eventKey);
+          if (existing) existing.push(f.id);
+          else eventToFileIds.set(eventKey, [f.id]);
+        }
+        continue;
+      }
+      customFileIds.push(f.id);
+    }
+
+    const items: Array<
+      | { kind: "event"; eventKey: string; fileIds: string[]; searchText: string }
+      | { kind: "custom"; eventKey: string; fileId: string; searchText: string }
+    > = [];
+
+    for (const [eventKey, fileIds] of eventToFileIds.entries()) {
+      const first = fileById.get(fileIds[0] ?? "");
+      const names = first ? `${first.originalName} ${first.newName}` : "";
+      items.push({
+        kind: "event",
+        eventKey,
+        fileIds,
+        searchText: `${eventKey} ${names} ${fileIds.length}`.toLowerCase(),
+      });
+    }
+
+    for (const fileId of customFileIds) {
+      const f = fileById.get(fileId);
+      const eventKey = f ? `${key}.${f.newName}` : `${key}.unknown`;
+      const names = f ? `${f.originalName} ${f.newName}` : "";
+      items.push({
+        kind: "custom",
+        eventKey,
+        fileId,
+        searchText: `${eventKey} ${names}`.toLowerCase(),
+      });
+    }
+
+    items.sort((a, b) => {
+      if (a.eventKey < b.eventKey) return -1;
+      if (a.eventKey > b.eventKey) return 1;
+      return a.kind === "event" && b.kind === "custom" ? -1 : a.kind === "custom" && b.kind === "event" ? 1 : 0;
+    });
+
+    return items;
+  }, [files, meta.key, meta.modifyVanilla, subtitleDialogFileById]);
+
+  const subtitleDialogMatches = useMemo(() => {
+    if (!normalizedSubtitleDialogQuery) return subtitleDialogItems;
+    return subtitleDialogItems.filter((item) => item.searchText.includes(normalizedSubtitleDialogQuery));
+  }, [normalizedSubtitleDialogQuery, subtitleDialogItems]);
+
+  const openSubtitleDialog = (e?: ReactMouseEvent<HTMLElement>) => {
+    if (!e) return;
+    subtitleDialogLastActiveRef.current = e.currentTarget;
+    const prefix = tr("音频：", "Audio: ");
+    const currentFiles = filesRef.current;
+
+    setCustomSubtitles((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const f of currentFiles) {
+        const existing = next[f.id]?.trim();
+        if (existing) continue;
+        const base = getAudioBaseName(f.originalName) || f.newName;
+        next[f.id] = `${prefix}${base}`;
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+
+    setSubtitleDialogQuery("");
+    setSubtitleDialogOpen(true);
+  };
+
+  const closeSubtitleDialog = () => {
+    setSubtitleDialogOpen(false);
+    setSubtitleDialogQuery("");
+  };
 
   const openPackFormatDialog = (e?: ReactMouseEvent<HTMLElement>) => {
     if (!e) return;
@@ -3298,12 +3452,9 @@ export default function AudioPackGenerator() {
       tr: trNoop,
       step,
       platform: meta.platform,
-      guidePhase,
       processingError: processing.error,
       goToStep: noopGoToStep,
       startProcessing: noop,
-      enableModifyVanilla: noop,
-      startVanillaGuide: noop,
     });
     const maxIndex = Math.max(0, items.length - 1);
     if (guideIndex > maxIndex) {
@@ -3382,47 +3533,7 @@ export default function AudioPackGenerator() {
       guideAnchorLastRectRef.current = next;
       setGuideAnchorRect(next);
     });
-  }, [guideIndex, guideOpen, guidePhase, meta.platform, processing.error, step]);
-
-  useEffect(() => {
-    if (!guideOpen) return;
-    if (guidePhase !== "vanilla") return;
-    if (step !== 1) return;
-    if (meta.modifyVanilla) {
-      guideSecondRoundModifyVanillaOpenedRef.current = true;
-      return;
-    }
-    if (guideSecondRoundModifyVanillaOpenedRef.current) return;
-
-    const items = buildImmersiveGuideItems({
-      tr: trNoop,
-      step,
-      platform: meta.platform,
-      guidePhase: "vanilla",
-      processingError: processing.error,
-      goToStep: noopGoToStep,
-      startProcessing: noop,
-      enableModifyVanilla: noop,
-      startVanillaGuide: noop,
-    });
-    const itemTotal = items.length;
-    if (itemTotal === 0) return;
-    const itemIndex = Math.min(Math.max(0, guideIndex), itemTotal - 1);
-    const item = items[itemIndex] ?? null;
-    if (item?.anchorKey !== "step1ModifyVanilla") return;
-
-    const timer = window.setTimeout(() => {
-      setMeta((prev) => ({
-        ...prev,
-        modifyVanilla: true,
-      }));
-      guideSecondRoundModifyVanillaOpenedRef.current = true;
-    }, 450);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [guideIndex, guideOpen, guidePhase, meta.modifyVanilla, meta.platform, processing.error, step]);
+  }, [guideIndex, guideOpen, meta.platform, processing.error, step]);
 
   useEffect(() => {
     if (step < 2) return;
@@ -3439,6 +3550,9 @@ export default function AudioPackGenerator() {
   const resetAll = () => {
     setStep(1);
     setFiles([]);
+    setCustomSubtitles({});
+    setEventSubtitles({});
+    setNameReviewRequested(false);
     setMeta({
       name: "",
       key: DEFAULT_KEY,
@@ -3447,8 +3561,10 @@ export default function AudioPackGenerator() {
       javaPackFormat: DEFAULT_JAVA_PACK_FORMAT,
       iconFile: null,
       iconPreviewUrl: null,
-      modifyVanilla: false,
+      modifyVanilla: true,
     });
+    setSubtitleDialogOpen(false);
+    setSubtitleDialogQuery("");
     setProcessing({
       title: "正在准备转换器...",
       desc: "首次使用会下载转换组件，请耐心等待。",
@@ -3457,18 +3573,6 @@ export default function AudioPackGenerator() {
       error: null,
     });
     setAudioProgress({});
-  };
-
-  const startVanillaGuide = () => {
-    guideSecondRoundModifyVanillaOpenedRef.current = false;
-    setGuidePhase("vanilla");
-    setGuideIndex(0);
-    setGuideAnchorRect(null);
-    setStep(1);
-    setMeta((prev) => ({
-      ...prev,
-      modifyVanilla: false,
-    }));
   };
 
   const finishGuide = () => {
@@ -3524,12 +3628,11 @@ export default function AudioPackGenerator() {
       }
 
       const current = filesRef.current;
-      const usedNames = new Set(current.map((f) => f.newName));
       const usedHashes = new Set(current.map((f) => f.hash).filter(Boolean));
 
       const nextItems: FileItem[] = [];
+      const nextCustomSubtitles: Record<string, string> = {};
       let skippedDuplicate = 0;
-      let skippedNameConflict = 0;
       let skippedHashError = 0;
 
       for (const file of incoming) {
@@ -3550,16 +3653,13 @@ export default function AudioPackGenerator() {
         const originalBase = dot > 0 ? file.name.slice(0, dot) : file.name;
         const base = processFileName(originalBase);
         const newName = clampText(base || "sound", 8);
-
-        if (usedNames.has(newName)) {
-          skippedNameConflict += 1;
-          continue;
-        }
+        const id = buildId();
+        const subtitleBase = getAudioBaseName(file.name) || newName;
+        nextCustomSubtitles[id] = `${tr("音频：", "Audio: ")}${subtitleBase}`;
 
         usedHashes.add(hash);
-        usedNames.add(newName);
         nextItems.push({
-          id: buildId(),
+          id,
           originalFile: file,
           originalName: file.name,
           hash,
@@ -3572,12 +3672,12 @@ export default function AudioPackGenerator() {
 
       if (nextItems.length > 0) {
         setFiles((prev) => [...prev, ...nextItems]);
+        setCustomSubtitles((prev) => ({ ...prev, ...nextCustomSubtitles }));
       }
 
-      if (skippedDuplicate > 0 || skippedNameConflict > 0 || skippedHashError > 0 || skippedTooLarge > 0) {
+      if (skippedDuplicate > 0 || skippedHashError > 0 || skippedTooLarge > 0) {
         const parts: string[] = [];
         if (skippedDuplicate > 0) parts.push(`重复音频 ${skippedDuplicate} 个`);
-        if (skippedNameConflict > 0) parts.push(`命名冲突 ${skippedNameConflict} 个`);
         if (skippedHashError > 0) parts.push(`哈希失败 ${skippedHashError} 个`);
         if (skippedTooLarge > 0)
           parts.push(`文件过大 ${skippedTooLarge} 个（单个文件最大 ${formatBytes(FFMPEG_WASM_MAX_INPUT_BYTES)}）`);
@@ -3619,9 +3719,6 @@ export default function AudioPackGenerator() {
     const next = sanitizeSoundName(value);
     if (!next) return "名称不能为空";
 
-    const current = filesRef.current;
-    if (current.some((f) => f.id !== id && f.newName === next)) return "名称已被占用";
-
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, newName: next } : f)));
     return null;
   };
@@ -3651,6 +3748,8 @@ export default function AudioPackGenerator() {
   };
 
   const startProcessing = async () => {
+    setNameReviewRequested(true);
+    if (collectDuplicateFileNameIds(files).size > 0) return;
     goToStep(3);
 
     const total = files.length;
@@ -3874,6 +3973,20 @@ export default function AudioPackGenerator() {
     ];
   };
 
+  const buildSubtitleContext = (key: string, sourceFiles: FileItem[]): SubtitleContext => {
+    const prefix = tr("音频：", "Audio: ");
+
+    const customByFileId: Record<string, string> = { ...customSubtitles };
+    for (const f of sourceFiles) {
+      const existing = customByFileId[f.id]?.trim();
+      if (existing) continue;
+      const base = getAudioBaseName(f.originalName) || f.newName;
+      customByFileId[f.id] = `${prefix}${base}`;
+    }
+
+    return { customByFileId, byEventKey: { ...eventSubtitles } };
+  };
+
   const downloadPack = async () => {
     const zip = new JSZip();
     const safeName = meta.name.trim() || "SoundPack";
@@ -3902,10 +4015,12 @@ export default function AudioPackGenerator() {
         soundFolder.file(`${f.newName}.ogg`, f.processedBlob as Blob);
       }
 
+      const subtitles = buildSubtitleContext(key, readyFiles);
       const soundsJson = buildJavaSoundsJson(
         key,
-        readyFiles.map((f) => ({ newName: f.newName, vanillaEvents: f.vanillaEvents })),
-        meta.modifyVanilla
+        readyFiles.map((f) => ({ id: f.id, newName: f.newName, vanillaEvents: f.vanillaEvents })),
+        meta.modifyVanilla,
+        subtitles
       );
 
       zip
@@ -3946,10 +4061,12 @@ export default function AudioPackGenerator() {
         soundFolder.file(`${f.newName}.ogg`, f.processedBlob as Blob);
       }
 
+      const subtitles = buildSubtitleContext(key, readyFiles);
       const definitions = buildBedrockSoundDefinitions(
         key,
-        readyFiles.map((f) => ({ newName: f.newName, vanillaEvents: f.vanillaEvents })),
-        meta.modifyVanilla
+        readyFiles.map((f) => ({ id: f.id, newName: f.newName, vanillaEvents: f.vanillaEvents })),
+        meta.modifyVanilla,
+        subtitles
       );
       zip
         .folder("sounds")
@@ -4000,16 +4117,9 @@ export default function AudioPackGenerator() {
           tr,
           step,
           platform: meta.platform,
-          guidePhase,
           processingError: processing.error,
           goToStep,
-          startProcessing: () => {
-            if (guidePhase === "vanilla") setGuidePhase("main");
-            void startProcessing();
-          },
-          enableModifyVanilla: () =>
-            setMeta((prev) => (prev.modifyVanilla ? prev : { ...prev, modifyVanilla: true })),
-          startVanillaGuide,
+          startProcessing: () => void startProcessing(),
         });
         const itemTotal = guideItems.length;
         if (itemTotal === 0) return null;
@@ -4017,7 +4127,7 @@ export default function AudioPackGenerator() {
         const rawItem = guideItems[itemIndex];
         const isLast = itemIndex + 1 >= itemTotal;
         const item =
-          isLast && guidePhase === "main" && step < 3 && !rawItem.primaryAction
+          isLast && step < 3 && !rawItem.primaryAction
             ? { ...rawItem, primaryLabel: rawItem.primaryLabel ?? tr("下一步", "Next") }
             : rawItem;
         const stepTitle =
@@ -4030,12 +4140,11 @@ export default function AudioPackGenerator() {
               5: tr("生成命令", "Commands"),
             } as const
           )[step] ?? tr("引导", "Guide");
-        const guideTitle = guidePhase === "vanilla" ? tr("修改原版音频", "Replace Vanilla Sounds") : stepTitle;
 
         return (
           <ImmersiveGuideOverlay
             step={step}
-            stepTitle={guideTitle}
+            stepTitle={stepTitle}
             itemIndex={itemIndex}
             itemTotal={itemTotal}
             item={item}
@@ -4050,7 +4159,7 @@ export default function AudioPackGenerator() {
                 item.primaryAction();
                 return;
               }
-              if (guidePhase === "main" && step === 5) {
+              if (step === 5) {
                 finishGuide();
               }
             }}
@@ -4226,39 +4335,6 @@ export default function AudioPackGenerator() {
 
                     <div
                       ref={(el) => {
-                        guideAnchorsRef.current.step1ModifyVanilla = el;
-                      }}
-                      className="col-span-1 sm:col-span-2"
-                    >
-                      <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                        <div>
-                          <div className="text-sm font-bold text-slate-700">
-                            {tr("修改原版音频?", "Replace Vanilla Sounds?")}
-                          </div>
-                          <div className="text-xs text-slate-400">
-                            {meta.platform === "bedrock"
-                              ? tr("开启后可替换基岩版原版声音事件。", "Enable to map Bedrock vanilla sound events.")
-                              : tr("开启后可替换原版声音事件，如受伤、走路等。", "Enable to map vanilla events (hurt, walking, etc.).")}
-                          </div>
-                        </div>
-
-                        <label className="flex cursor-pointer items-center gap-3 select-none">
-                          <div className="relative">
-                            <input
-                              type="checkbox"
-                              className="peer sr-only"
-                              checked={meta.modifyVanilla}
-                              onChange={(e) => setMeta((prev) => ({ ...prev, modifyVanilla: e.target.checked }))}
-                            />
-                            <div className="h-7 w-12 rounded-full bg-[color:var(--surface-strong)] transition-colors peer-checked:bg-sky-400" />
-                            <div className="pointer-events-none absolute left-1 top-1 h-5 w-5 rounded-full bg-[#ffffff] shadow-sm transition-transform peer-checked:translate-x-5" />
-                          </div>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div
-                      ref={(el) => {
                         guideAnchorsRef.current.step1Desc = el;
                       }}
                       className="col-span-1 sm:col-span-2"
@@ -4306,13 +4382,14 @@ export default function AudioPackGenerator() {
                   <div>
                     <h2 className="text-2xl font-extrabold text-slate-800">{tr("添加音频文件", "Add Audio Files")}</h2>
                     <p className="text-sm text-slate-500">
-                      {meta.modifyVanilla
-                        ? tr("选择要替换的原版声音事件。", "Choose the vanilla sound event to replace.")
-                        : tr("拖入文件，系统将自动重命名。", "Drop files here and rename them as needed.")}
+                      {tr(
+                        "可选：为每个音频配置要替换的原版声音事件（可添加多个）。",
+                        "Optional: map each audio to one or more vanilla sound events."
+                      )}
                     </p>
                   </div>
 
-                  <div>
+                  <div className="flex items-center gap-2">
                     <label
                       ref={(el) => {
                         guideAnchorsRef.current.step2AddFiles = el;
@@ -4329,6 +4406,14 @@ export default function AudioPackGenerator() {
                         onChange={(e) => void onAddFiles(e.target.files)}
                       />
                     </label>
+                    <button
+                      type="button"
+                      disabled={fileCount === 0}
+                      onClick={(e) => openSubtitleDialog(e)}
+                      className="inline-flex items-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50 hover:text-slate-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      {tr("管理字幕", "Manage Subtitles")}
+                    </button>
                   </div>
                 </div>
 
@@ -4342,13 +4427,13 @@ export default function AudioPackGenerator() {
                     guideDemo={guideOpen}
                     platform={meta.platform}
                     modifyVanilla={meta.modifyVanilla}
+                    duplicateNameIds={duplicateNameIds}
                     files={files}
                     onAddFiles={onAddFiles}
                     onRemoveFile={onRemoveFile}
                     onRenameFile={onRenameFile}
                     onUpdateVanillaEvents={onUpdateVanillaEvents}
                     onVanillaEventAnchor={(el) => {
-                      if (!meta.modifyVanilla) return;
                       guideAnchorsRef.current.step2VanillaEvent = el;
                     }}
                     vanillaEventOptions={vanillaEventOptions}
@@ -4358,10 +4443,13 @@ export default function AudioPackGenerator() {
                 </div>
 
                 <div className="mt-4 flex shrink-0 flex-col gap-4 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
-                  <span className="text-sm font-bold text-slate-500">
-                    {tr("已添加", "Added")} <span className="text-sky-500">{fileCount}</span>{" "}
-                    {tr("个文件", "files")}
-                  </span>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-slate-500">
+                      {tr("已添加", "Added")} <span className="text-sky-500">{fileCount}</span>{" "}
+                      {tr("个文件", "files")}
+                    </div>
+                    {nameReviewError ? <div className="mt-1 text-sm font-bold text-red-600">{nameReviewError}</div> : null}
+                  </div>
                   <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
                     <button
                       type="button"
@@ -4814,7 +4902,7 @@ export default function AudioPackGenerator() {
                   const selected = value === meta.javaPackFormat;
                   return (
                     <button
-                      key={value}
+                      key={`${opt.version}-${value}`}
                       type="button"
                       onClick={() => applyPackFormatDialogValue(value)}
                       className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-sky-300 hover:bg-sky-50"
@@ -4831,6 +4919,167 @@ export default function AudioPackGenerator() {
                   );
                 })}
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {subtitleDialogOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeSubtitleDialog();
+          }}
+          onKeyDownCapture={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              closeSubtitleDialog();
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
+            className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl outline-none"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
+              <div className="min-w-0">
+                <div className="text-base font-extrabold text-slate-800">{tr("字幕管理", "Subtitle Manager")}</div>
+                <div className="mt-1 text-sm text-slate-500">
+                  {tr("字幕属于声音事件；同一事件只会显示一个字幕。", "Subtitles are per sound event (one subtitle per event).")}
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label={tr("关闭", "Close")}
+                onClick={closeSubtitleDialog}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5">
+              <div className="relative">
+                <input
+                  ref={subtitleDialogInputRef}
+                  value={subtitleDialogQuery}
+                  onChange={(e) => setSubtitleDialogQuery(e.target.value)}
+                  className="w-full rounded-2xl border-2 border-transparent bg-slate-50 py-3 pl-4 pr-11 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
+                  placeholder={tr("搜索事件 / 文件名", "Search event / filename")}
+                />
+                {subtitleDialogQuery ? (
+                  <button
+                    type="button"
+                    aria-label={tr("清空输入", "Clear input")}
+                    onClick={() => {
+                      setSubtitleDialogQuery("");
+                      requestAnimationFrame(() => subtitleDialogInputRef.current?.focus());
+                    }}
+                    className="absolute right-2 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+              <div className="mb-2 text-[11px] font-bold text-slate-400">
+                {tr("匹配结果", "Matches")}: {subtitleDialogMatches.length}
+              </div>
+              {subtitleDialogMatches.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-400">
+                  {tr("暂无可管理的字幕（请先添加音频）。", "No subtitles to manage (add audio first).")}
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {subtitleDialogMatches.map((item) => {
+                    const fileIds = item.kind === "event" ? item.fileIds : [item.fileId];
+                    const first = subtitleDialogFileById.get(fileIds[0] ?? "") ?? null;
+                    const base = first ? getAudioBaseName(first.originalName) || first.newName : "";
+                    const defaultSubtitle =
+                      item.kind === "event" ? "" : base ? `${tr("音频：", "Audio: ")}${base}` : "";
+
+                    const hasValue =
+                      item.kind === "event"
+                        ? Object.prototype.hasOwnProperty.call(eventSubtitles, item.eventKey)
+                        : Object.prototype.hasOwnProperty.call(customSubtitles, item.fileId);
+                    const currentValue =
+                      item.kind === "event"
+                        ? (eventSubtitles[item.eventKey] ?? "")
+                        : (customSubtitles[item.fileId] ?? "");
+                    const value = hasValue ? currentValue : defaultSubtitle;
+
+                    const onAuto = () => {
+                      if (item.kind === "event") {
+                        setEventSubtitles((prev) => {
+                          if (!Object.prototype.hasOwnProperty.call(prev, item.eventKey)) return prev;
+                          const next = { ...prev };
+                          delete next[item.eventKey];
+                          return next;
+                        });
+                      } else {
+                        setCustomSubtitles((prev) => ({ ...prev, [item.fileId]: defaultSubtitle }));
+                      }
+                    };
+
+                    return (
+                      <div key={item.kind === "event" ? `event-${item.eventKey}` : `file-${item.fileId}`} className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-extrabold text-slate-800" title={item.eventKey}>
+                              {item.eventKey}
+                            </div>
+                            <div className="mt-1 text-[11px] font-bold text-slate-400">
+                              {item.kind === "event"
+                                ? tr(`关联 ${fileIds.length} 个音频`, `Linked ${fileIds.length} files`)
+                                : first
+                                  ? first.originalName
+                                  : ""}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={onAuto}
+                            className="inline-flex shrink-0 items-center rounded-xl bg-slate-900 px-3 py-2 text-[11px] font-bold text-white transition hover:bg-slate-800"
+                          >
+                            {tr("自动生成", "Auto")}
+                          </button>
+                        </div>
+                        <div className="mt-3">
+                          <input
+                            value={value}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              if (item.kind === "event") {
+                                setEventSubtitles((prev) => {
+                                  const trimmed = next.trim();
+                                  if (!trimmed) {
+                                    if (!Object.prototype.hasOwnProperty.call(prev, item.eventKey)) return prev;
+                                    const copy = { ...prev };
+                                    delete copy[item.eventKey];
+                                    return copy;
+                                  }
+                                  return { ...prev, [item.eventKey]: next };
+                                });
+                              } else {
+                                setCustomSubtitles((prev) => ({ ...prev, [item.fileId]: next }));
+                              }
+                            }}
+                            placeholder={
+                              item.kind === "event"
+                                ? tr("留空=使用原版字幕", "Empty = use vanilla subtitle")
+                                : defaultSubtitle || tr("音频：xxx", "Audio: xxx")
+                            }
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -4852,6 +5101,7 @@ function FileDropZone({
   guideDemo,
   platform,
   modifyVanilla,
+  duplicateNameIds,
   files,
   onAddFiles,
   onRemoveFile,
@@ -4865,6 +5115,7 @@ function FileDropZone({
   guideDemo: boolean;
   platform: PackPlatform;
   modifyVanilla: boolean;
+  duplicateNameIds?: ReadonlySet<string>;
   files: FileItem[];
   onAddFiles: (list: FileList | null) => void | Promise<void>;
   onRemoveFile: (id: string) => void;
@@ -5084,11 +5335,13 @@ function FileDropZone({
     const key = event.trim();
     if (!key) return false;
     const w = Number.isFinite(weight) ? Math.floor(weight) : 1;
+    if (w <= 0) return false;
     for (const f of files) {
       if (f.id === vanillaManagerFileId) continue;
       for (const mapping of f.vanillaEvents ?? []) {
         if (mapping.event.trim() !== key) continue;
         const other = Number.isFinite(mapping.weight) ? Math.floor(mapping.weight) : 1;
+        if (other <= 0) continue;
         if (other === w) return true;
       }
     }
@@ -5104,11 +5357,11 @@ function FileDropZone({
       for (const mapping of f.vanillaEvents ?? []) {
         if (mapping.event.trim() !== key) continue;
         const other = Number.isFinite(mapping.weight) ? Math.floor(mapping.weight) : 1;
-        used.add(other);
+        if (other > 0) used.add(other);
       }
     }
     const prefer = Number.isFinite(preferred) ? Math.floor(preferred!) : 1;
-    if (prefer >= 0 && !used.has(prefer)) return prefer;
+    if (prefer > 0 && !used.has(prefer)) return prefer;
     for (let w = 1; ; w += 1) {
       if (!used.has(w)) return w;
     }
@@ -5293,7 +5546,7 @@ function FileDropZone({
                               ? "正在加载事件列表..."
                               : vanillaEventLoadFailed
                                 ? "事件列表加载失败，请刷新页面"
-                                : "留空则不替换"
+                                : tr("留空则直接生成为声音事件", "Leave empty to generate a custom sound event")
                           }
                           className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(224,242,254,1)]"
                           value={item.vanillaEvents[0]?.event ?? ""}
@@ -5355,6 +5608,7 @@ function FileDropZone({
                   ? "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
                   : "flex items-center justify-between gap-4",
                 "border-slate-100 hover:border-sky-400/30",
+                duplicateNameIds?.has(f.id) ? "border-red-400 bg-red-50 ring-2 ring-red-200/80 ring-offset-2 ring-offset-white" : "",
                 f.status === "error" ? "border-red-200" : "",
               ].join(" ")}
             >
@@ -5387,7 +5641,12 @@ function FileDropZone({
                                 cancelInlineEdit();
                               }
                             }}
-                            className="w-28 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 outline-none ring-1 ring-sky-200 transition focus:bg-white focus:ring-2 focus:ring-sky-400"
+                            className={[
+                              "w-28 rounded px-1.5 py-0.5 font-mono outline-none ring-1 transition focus:bg-white focus:ring-2",
+                              duplicateNameIds?.has(f.id)
+                                ? "bg-red-100 text-red-700 ring-red-200 focus:ring-red-400"
+                                : "bg-sky-50 text-sky-600 ring-sky-200 focus:ring-sky-400",
+                            ].join(" ")}
                           />
                           {editingError ? (
                             <div className="mt-1 text-[11px] font-bold text-red-500">{editingError}</div>
@@ -5398,7 +5657,12 @@ function FileDropZone({
                           <button
                             type="button"
                             onClick={() => openRenameDialog(f)}
-                            className="inline-flex items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 transition hover:bg-sky-100 md:hidden"
+                            className={[
+                              "inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono transition md:hidden",
+                              duplicateNameIds?.has(f.id)
+                                ? "bg-red-100 text-red-700 hover:bg-red-200"
+                                : "bg-sky-50 text-sky-600 hover:bg-sky-100",
+                            ].join(" ")}
                           >
                             {f.newName}
                             <Edit2 className="h-3 w-3" />
@@ -5406,7 +5670,12 @@ function FileDropZone({
                           <button
                             type="button"
                             onClick={() => beginInlineEdit(f)}
-                            className="hidden items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-sky-600 transition hover:bg-sky-100 md:inline-flex"
+                            className={[
+                              "hidden items-center gap-1 rounded px-1.5 py-0.5 font-mono transition md:inline-flex",
+                              duplicateNameIds?.has(f.id)
+                                ? "bg-red-100 text-red-700 hover:bg-red-200"
+                                : "bg-sky-50 text-sky-600 hover:bg-sky-100",
+                            ].join(" ")}
                           >
                             {f.newName}
                             <Edit2 className="h-3 w-3" />
@@ -5653,8 +5922,8 @@ function FileDropZone({
                 </div>
                 <div className="mt-1 text-[11px] font-bold text-slate-400">
                   {tr(
-                    "权重 ≥ 0（默认 1，同事件需唯一）；音高/音量 范围 0-1（默认 1）；",
-                    "Weight ≥ 0 (default 1, unique per event); pitch/volume range 0-1 (default 1);"
+                    "权重：0 表示使用默认权重（不写入配置）；>0 时同事件需唯一。音高/音量 范围 0-1（默认 1）；",
+                    "Weight: 0 uses default (not written). When >0, it must be unique per event. pitch/volume range 0-1 (default 1);"
                   )}
                 </div>
                 {vanillaManagerError ? (
@@ -5688,7 +5957,10 @@ function FileDropZone({
             <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
               {vanillaManagerMappings.length === 0 ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-bold text-slate-500">
-                  {tr("暂未添加事件（留空则不替换）。", "No events added (leave empty to skip replacing).")}
+                  {tr(
+                    "暂未添加事件（留空则直接生成为声音事件）。",
+                    "No events added (leave empty to generate a custom sound event)."
+                  )}
                 </div>
               ) : (
                 <div className="grid gap-2">

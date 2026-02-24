@@ -95,7 +95,11 @@ const mc_version: JavaPackVersion[] = [
     { "pack_format": "78.0", "version": "26.1-snapshot-3" },
     { "pack_format": "78.1", "version": "26.1-snapshot-4" },
     { "pack_format": "79.0", "version": "26.1-snapshot-5" },
-    { "pack_format": "90.0", "version": "26.1-snapshot-6" }
+    { "pack_format": "80.0", "version": "26.1-snapshot-6" },
+    { "pack_format": "81.0", "version": "26.1-snapshot-7" },
+    { "pack_format": "81.1", "version": "26.1-snapshot-8" },
+    { "pack_format": "81.1", "version": "26.1-snapshot-9" },
+    { "pack_format": "82.0", "version": "26.1-snapshot-10" }
 ]
 
 export default mc_version;
